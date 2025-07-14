@@ -1721,9 +1721,58 @@ _SOKOL_PRIVATE _sfetch_item_t* _sfetch_pool_item_lookup(_sfetch_pool_t* pool, ui
 //
 // >>posix
 #if _SFETCH_PLATFORM_POSIX
-_SOKOL_PRIVATE _sfetch_file_handle_t _sfetch_file_open(const _sfetch_path_t* path) {
+
+#ifdef __ANDROID__
+
+#include <android/asset_manager.h>
+#include <android/native_activity.h>
+#include "sokol_app.h"
+
+FILE* funopen(const void *cookie, int (*readfn)(void *, char *, int), int (*writefn)(void *, const char *, int),
+              fpos_t (*seekfn)(void *, fpos_t, int), int (*closefn)(void *));
+
+_SOKOL_PRIVATE int android_read(void* a, char* buf, int size)
+{
+    return AAsset_read((AAsset*)a, buf, size);
+}
+
+_SOKOL_PRIVATE int android_write(void* a, const char* buf, int size)
+{
+    return EACCES;  // can't provide write access to the apk
+}
+
+_SOKOL_PRIVATE fpos_t android_seek(void* a, fpos_t offset, int whence)
+{
+    return AAsset_seek((AAsset*)a, offset, whence);
+}
+
+_SOKOL_PRIVATE int android_close(void* a)
+{
+    AAsset_close((AAsset*)a);
+    return 0;
+}
+
+_SOKOL_PRIVATE _sfetch_file_handle_t _sfetch_file_open(const _sfetch_path_t* path)
+{
+    _sfetch_file_handle_t h = _SFETCH_INVALID_FILE_HANDLE;
+    ANativeActivity* act = (ANativeActivity*)sapp_android_get_native_activity();
+    AAsset* a = AAssetManager_open(act->assetManager, path->buf, 0);
+    if (a)
+    {
+        h = funopen(a, android_read, android_write, android_seek,
+                    android_close);
+    }
+    return h;
+}
+
+#else
+
+_SOKOL_PRIVATE _sfetch_file_handle_t _sfetch_file_open(const _sfetch_path_t* path)
+{
     return fopen(path->buf, "rb");
 }
+
+#endif // __ANDROID__
 
 _SOKOL_PRIVATE void _sfetch_file_close(_sfetch_file_handle_t h) {
     fclose(h);
