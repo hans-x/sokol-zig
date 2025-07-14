@@ -1738,7 +1738,8 @@ _SOKOL_PRIVATE int android_read(void* a, char* buf, int size)
 
 _SOKOL_PRIVATE int android_write(void* a, const char* buf, int size)
 {
-    return EACCES;  // can't provide write access to the apk
+    // return EACCES;  // can't provide write access to the apk
+    return 0;  // can't provide write access to the apk
 }
 
 _SOKOL_PRIVATE fpos_t android_seek(void* a, fpos_t offset, int whence)
