@@ -4,7 +4,7 @@ Auto-generated Zig bindings for the [sokol headers](https://github.com/floooh/so
 
 [Auto-generated docs](https://floooh.github.io/sokol-zig-docs) (wip)
 
-For Zig version 0.14.0+
+For Zig version 0.15+
 
 In case of breaking changes in Zig, the bindings might fall behind. Please don't hesitate to
 ping me via a Github issue, or even better, provide a PR :)
@@ -133,16 +133,19 @@ pub fn build(b: *Build) !void {
         .target = target,
         .optimize = optimize,
     });
-   const hello = b.addExecutable(.{
+    const hello = b.addExecutable(.{
         .name = "hello",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/hello.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = .{
-                .{ .name = "sokol", dep_sokol.module("sokol") },
-            }
-        },
+            .imports = &.{
+                .{
+                    .name = "sokol",
+                    .module = dep_sokol.module("sokol"),
+                },
+            },
+        }),
     });
     b.installArtifact(hello);
     const run = b.addRunArtifact(hello);

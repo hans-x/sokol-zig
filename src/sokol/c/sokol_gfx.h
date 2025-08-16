@@ -254,8 +254,8 @@
         Both sg_apply_viewport() and sg_apply_scissor_rect() must be called
         inside a rendering pass (e.g. not in a compute pass, or outside a pass)
 
-        Note that sg_begin_default_pass() and sg_begin_pass() will reset both the
-        viewport and scissor rectangles to cover the entire framebuffer.
+        Note that sg_begin_pass() will reset both the viewport and scissor
+        rectangles to cover the entire framebuffer.
 
     --- to update (overwrite) the content of buffer and image resources, call:
 
@@ -16904,14 +16904,14 @@ _SOKOL_PRIVATE _sg_wgpu_shader_func_t _sg_wgpu_create_shader_func(const sg_shade
     _sg_clear(&res, sizeof(res));
     _sg_strcpy(&res.entry, func->entry);
 
-    WGPUShaderModuleWGSLDescriptor wgpu_shdmod_wgsl_desc;
-    _sg_clear(&wgpu_shdmod_wgsl_desc, sizeof(wgpu_shdmod_wgsl_desc));
-    wgpu_shdmod_wgsl_desc.chain.sType = WGPUSType_ShaderSourceWGSL;
-    wgpu_shdmod_wgsl_desc.code = _sg_wgpu_stringview(func->source);
+    WGPUShaderSourceWGSL wgpu_shdsrc_wgsl;
+    _sg_clear(&wgpu_shdsrc_wgsl, sizeof(wgpu_shdsrc_wgsl));
+    wgpu_shdsrc_wgsl.chain.sType = WGPUSType_ShaderSourceWGSL;
+    wgpu_shdsrc_wgsl.code = _sg_wgpu_stringview(func->source);
 
     WGPUShaderModuleDescriptor wgpu_shdmod_desc;
     _sg_clear(&wgpu_shdmod_desc, sizeof(wgpu_shdmod_desc));
-    wgpu_shdmod_desc.nextInChain = &wgpu_shdmod_wgsl_desc.chain;
+    wgpu_shdmod_desc.nextInChain = &wgpu_shdsrc_wgsl.chain;
     wgpu_shdmod_desc.label = _sg_wgpu_stringview(label);
 
     // NOTE: if compilation fails we won't actually find out in this call since

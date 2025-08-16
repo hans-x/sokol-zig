@@ -5,9 +5,14 @@ const log = std.log;
 const Allocator = std.mem.Allocator;
 
 pub fn main() !void {
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    var dbg_allocator: std.heap.DebugAllocator(.{}) = .init;
+    defer if (dbg_allocator.deinit() != .ok) {
+        @panic("Memory leaks detected!");
+    };
+    const alloc = dbg_allocator.allocator();
+    var arena_allocator: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
 
     // parse args
     const prefix = try arg(arena, "--prefix");
@@ -28,11 +33,15 @@ pub fn main() !void {
         fatal("failed to open output file '{s}' with {}", .{ output_path, err });
     };
     defer outp_file.close();
+    var file_read_buffer: [1024]u8 = undefined;
+    var file_write_buffer: [1024]u8 = undefined;
+    var file_reader: std.fs.File.Reader = .init(inp_file, &file_read_buffer);
+    var file_writer: std.fs.File.Writer = .init(outp_file, &file_write_buffer);
 
-    var tar_writer = std.tar.writer(outp_file.writer());
+    var tar_writer: std.tar.Writer = .{ .underlying_writer = &file_writer.interface };
     var file_name_buffer: [1024]u8 = undefined;
     var link_name_buffer: [1024]u8 = undefined;
-    var iter = std.tar.iterator(inp_file.reader(), .{
+    var iter: std.tar.Iterator = .init(&file_reader.interface, .{
         .file_name_buffer = &file_name_buffer,
         .link_name_buffer = &link_name_buffer,
     });
@@ -40,12 +49,23 @@ pub fn main() !void {
         switch (tar_item.kind) {
             .file => {
                 if (std.mem.startsWith(u8, tar_item.name, prefix)) {
-                    try tar_writer.writeFileStream(tar_item.name, tar_item.size, tar_item.reader(), .{ .mode = tar_item.mode });
+                    // FIMXE: currently it's not possible to directly plug iter.streamRemaining()
+                    // into a std.tar.Writer, so let's go through an intermediate buffer
+                    var imm_writer: std.Io.Writer.Allocating = .init(alloc);
+                    defer imm_writer.deinit();
+                    // stream the current tar item into the intermediate writer
+                    try iter.streamRemaining(tar_item, &imm_writer.writer);
+                    // get an intermediate reader on the intermediate writer's buffer
+                    var imm_reader = std.Io.Reader.fixed(imm_writer.getWritten());
+                    // ... and write the file data into the tar-writer
+                    try tar_writer.writeFileStream(tar_item.name, tar_item.size, &imm_reader, .{ .mode = tar_item.mode });
                 }
             },
             else => continue,
         }
     }
+    try tar_writer.finishPedantically();
+    try tar_writer.underlying_writer.flush();
     log.info("Done.", .{});
     return std.process.cleanExit();
 }
