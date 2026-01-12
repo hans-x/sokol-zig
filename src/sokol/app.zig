@@ -838,7 +838,7 @@
 //     sapp_html5_ask_leave_site(bool ask);
 //
 // The initial state of the associated internal flag can be provided
-// at startup via sapp_desc.html5_ask_leave_site.
+// at startup via sapp_desc.html5.ask_leave_site.
 //
 // This feature should only be used sparingly in critical situations - for
 // instance when the user would loose data - since popping up modal dialog
@@ -1037,11 +1037,13 @@
 //     sapp_desc sokol_main(int argc, char* argv[]) {
 //         return (sapp_desc){
 //             //...
-//             .html5_bubble_mouse_events = true,
-//             .html5_bubble_touch_events = true,
-//             .html5_bubble_wheel_events = true,
-//             .html5_bubble_key_events = true,
-//             .html5_bubble_char_events = true,
+//             .html5 = {
+//                 .bubble_mouse_events = true,
+//                 .bubble_touch_events = true,
+//                 .bubble_wheel_events = true,
+//                 .bubble_key_events = true,
+//                 .bubble_char_events = true,
+//             }
 //         };
 //     }
 //
@@ -1072,15 +1074,15 @@
 // is '#canvas'.
 //
 // If you name your canvas differently, you need to communicate that name to
-// sokol_app.h via `sapp_desc.html5_canvas_selector` as a regular css selector
+// sokol_app.h via `sapp_desc.html5.canvas_selector` as a regular css selector
 // string that's compatible with `document.querySelector()`. E.g. if your canvas
 // object looks like this:
 //
 //     <canvas id="bla" ...></canvas>
 //
-// The `sapp_desc.html5_canvas_selector` string must be set to '#bla':
+// The `sapp_desc.html5.canvas_selector` string must be set to '#bla':
 //
-//     .html5_canvas_selector = "#bla"
+//     .html5.canvas_selector = "#bla"
 //
 // If the canvas object cannot be looked up via `document.querySelector()` you
 // need to use one of the alternative methods, both involve the special
@@ -1125,7 +1127,7 @@
 // In that case, pass the same string to sokol_app.h which is used as key
 // in the specialHTMLTargets[] map:
 //
-//     .html5_canvas_selector = "my_canvas"
+//     .html5.canvas_selector = "my_canvas"
 //
 // If sokol_app.h can't find your canvas for some reason check for warning
 // messages on the browser console.
@@ -1185,11 +1187,11 @@
 // To help with these issues, sokol_app.h can be configured at startup
 // via the following Windows-specific sapp_desc flags:
 //
-//     sapp_desc.win32_console_utf8 (default: false)
+//     sapp_desc.win32.console_utf8 (default: false)
 //         When set to true, the output console codepage will be switched
 //         to UTF-8 (and restored to the original codepage on exit)
 //
-//     sapp_desc.win32_console_attach (default: false)
+//     sapp_desc.win32.console_attach (default: false)
 //         When set to true, stdout and stderr will be attached to the
 //         console of the parent process (if the parent process actually
 //         has a console). This means that if the application was started
@@ -1198,11 +1200,16 @@
 //         the application is started via double-click, it will behave like
 //         a regular UI application, and stdout/stderr will not be visible.
 //
-//     sapp_desc.win32_console_create (default: false)
+//     sapp_desc.win32.console_create (default: false)
 //         When set to true, a new console window will be created and
 //         stdout/stderr will be redirected to that console window. It
 //         doesn't matter if the application is started from the command
 //         line or via double-click.
+//
+//         NOTE: setting both win32.console_attach and win32.console_create
+//         to true also makes sense and has the effect that output
+//         will appear in the existing terminal when started from the cmdline, and
+//         otherwise (when started via double-click) will open a console window.
 //
 // MEMORY ALLOCATION OVERRIDE
 // ==========================
@@ -1730,9 +1737,146 @@ pub const LogItem = enum(i32) {
     WGPU_REQUEST_ADAPTER_STATUS_ERROR,
     WGPU_REQUEST_ADAPTER_STATUS_UNKNOWN,
     WGPU_CREATE_INSTANCE_FAILED,
+    VULKAN_ALLOC_DEVICE_MEMORY_NO_SUITABLE_MEMORY_TYPE,
+    VULKAN_ALLOCATE_MEMORY_FAILED,
+    VULKAN_CREATE_INSTANCE_FAILED,
+    VULKAN_ENUMERATE_PHYSICAL_DEVICES_FAILED,
+    VULKAN_NO_PHYSICAL_DEVICES_FOUND,
+    VULKAN_NO_SUITABLE_PHYSICAL_DEVICE_FOUND,
+    VULKAN_CREATE_DEVICE_FAILED_EXTENSION_NOT_PRESENT,
+    VULKAN_CREATE_DEVICE_FAILED_FEATURE_NOT_PRESENT,
+    VULKAN_CREATE_DEVICE_FAILED_INITIALIZATION_FAILED,
+    VULKAN_CREATE_DEVICE_FAILED_OTHER,
+    VULKAN_CREATE_SURFACE_FAILED,
+    VULKAN_CREATE_SWAPCHAIN_FAILED,
+    VULKAN_SWAPCHAIN_CREATE_IMAGE_VIEW_FAILED,
+    VULKAN_SWAPCHAIN_CREATE_IMAGE_FAILED,
+    VULKAN_SWAPCHAIN_ALLOC_IMAGE_DEVICE_MEMORY_FAILED,
+    VULKAN_SWAPCHAIN_BIND_IMAGE_MEMORY_FAILED,
+    VULKAN_ACQUIRE_NEXT_IMAGE_FAILED,
+    VULKAN_QUEUE_PRESENT_FAILED,
     IMAGE_DATA_SIZE_MISMATCH,
     DROPPED_FILE_PATH_TOO_LONG,
     CLIPBOARD_STRING_TOO_BIG,
+};
+
+/// sapp_pixel_format
+///
+/// Defines the pixel format for swapchain surfaces.
+///
+/// NOTE: when using sokol_gfx.h do not assume that the underlying
+/// values are compatible with sg_pixel_format!
+pub const PixelFormat = enum(i32) {
+    DEFAULT,
+    NONE,
+    RGBA8,
+    SRGB8A8,
+    BGRA8,
+    SBGRA8,
+    DEPTH,
+    DEPTH_STENCIL,
+};
+
+/// sapp_environment
+///
+/// Used to provide runtime environment information to the
+/// outside world (like default pixel formats and the backend
+/// 3D API device pointer) via a call to sapp_get_environment().
+///
+/// NOTE: when using sokol_gfx.h, don't assume that sapp_environment
+/// is binary compatible with sg_environment! Always use a translation
+/// function like sglue_environment() to populate sg_environment
+/// from sapp_environment!
+pub const EnvironmentDefaults = extern struct {
+    color_format: PixelFormat = .DEFAULT,
+    depth_format: PixelFormat = .DEFAULT,
+    sample_count: i32 = 0,
+};
+
+pub const MetalEnvironment = extern struct {
+    device: ?*const anyopaque = null,
+};
+
+pub const D3d11Environment = extern struct {
+    device: ?*const anyopaque = null,
+    device_context: ?*const anyopaque = null,
+};
+
+pub const WgpuEnvironment = extern struct {
+    device: ?*const anyopaque = null,
+};
+
+pub const VulkanEnvironment = extern struct {
+    physical_device: ?*const anyopaque = null,
+    device: ?*const anyopaque = null,
+    queue: ?*const anyopaque = null,
+    queue_family_index: u32 = 0,
+};
+
+pub const Environment = extern struct {
+    defaults: EnvironmentDefaults = .{},
+    metal: MetalEnvironment = .{},
+    d3d11: D3d11Environment = .{},
+    wgpu: WgpuEnvironment = .{},
+    vulkan: VulkanEnvironment = .{},
+};
+
+/// sapp_swapchain
+///
+/// Provides swapchain information for the current frame to the outside
+/// world via a call to sapp_get_swapchain().
+///
+/// NOTE: sapp_get_swapchain() must be called exactly once per frame since
+/// on some backends it will also acquire the next swapchain image.
+///
+/// NOTE: when using sokol_gfx.h, don't assume that the sapp_swapchain struct
+/// has the same memory layout as sg_swapchain! Use the sokol_log.h helper
+/// function sglue_swapchain() to translate sapp_swapchain into a
+/// sg_swapchain instead.
+pub const MetalSwapchain = extern struct {
+    current_drawable: ?*const anyopaque = null,
+    depth_stencil_texture: ?*const anyopaque = null,
+    msaa_color_texture: ?*const anyopaque = null,
+};
+
+pub const D3d11Swapchain = extern struct {
+    render_view: ?*const anyopaque = null,
+    resolve_view: ?*const anyopaque = null,
+    depth_stencil_view: ?*const anyopaque = null,
+};
+
+pub const WgpuSwapchain = extern struct {
+    render_view: ?*const anyopaque = null,
+    resolve_view: ?*const anyopaque = null,
+    depth_stencil_view: ?*const anyopaque = null,
+};
+
+pub const VulkanSwapchain = extern struct {
+    render_image: ?*const anyopaque = null,
+    render_view: ?*const anyopaque = null,
+    resolve_image: ?*const anyopaque = null,
+    resolve_view: ?*const anyopaque = null,
+    depth_stencil_image: ?*const anyopaque = null,
+    depth_stencil_view: ?*const anyopaque = null,
+    render_finished_semaphore: ?*const anyopaque = null,
+    present_complete_semaphore: ?*const anyopaque = null,
+};
+
+pub const GlSwapchain = extern struct {
+    framebuffer: u32 = 0,
+};
+
+pub const Swapchain = extern struct {
+    width: i32 = 0,
+    height: i32 = 0,
+    sample_count: i32 = 0,
+    color_format: PixelFormat = .DEFAULT,
+    depth_format: PixelFormat = .DEFAULT,
+    metal: MetalSwapchain = .{},
+    d3d11: D3d11Swapchain = .{},
+    wgpu: WgpuSwapchain = .{},
+    vulkan: VulkanSwapchain = .{},
+    gl: GlSwapchain = .{},
 };
 
 /// sapp_logger
@@ -1749,6 +1893,37 @@ pub const Logger = extern struct {
 
 /// sokol-app initialization options, used as return value of sokol_main()
 /// or sapp_run() argument.
+pub const GlDesc = extern struct {
+    major_version: i32 = 0,
+    minor_version: i32 = 0,
+};
+
+pub const Win32Desc = extern struct {
+    console_utf8: bool = false,
+    console_create: bool = false,
+    console_attach: bool = false,
+};
+
+pub const Html5Desc = extern struct {
+    canvas_selector: [*c]const u8 = null,
+    canvas_resize: bool = false,
+    preserve_drawing_buffer: bool = false,
+    premultiplied_alpha: bool = false,
+    ask_leave_site: bool = false,
+    update_document_title: bool = false,
+    bubble_mouse_events: bool = false,
+    bubble_touch_events: bool = false,
+    bubble_wheel_events: bool = false,
+    bubble_key_events: bool = false,
+    bubble_char_events: bool = false,
+    use_emsc_set_main_loop: bool = false,
+    emsc_set_main_loop_simulate_infinite_loop: bool = false,
+};
+
+pub const IosDesc = extern struct {
+    keyboard_resizes_canvas: bool = false,
+};
+
 pub const Desc = extern struct {
     init_cb: ?*const fn () callconv(.c) void = null,
     frame_cb: ?*const fn () callconv(.c) void = null,
@@ -1775,25 +1950,10 @@ pub const Desc = extern struct {
     icon: IconDesc = .{},
     allocator: Allocator = .{},
     logger: Logger = .{},
-    gl_major_version: i32 = 0,
-    gl_minor_version: i32 = 0,
-    win32_console_utf8: bool = false,
-    win32_console_create: bool = false,
-    win32_console_attach: bool = false,
-    html5_canvas_selector: [*c]const u8 = null,
-    html5_canvas_resize: bool = false,
-    html5_preserve_drawing_buffer: bool = false,
-    html5_premultiplied_alpha: bool = false,
-    html5_ask_leave_site: bool = false,
-    html5_update_document_title: bool = false,
-    html5_bubble_mouse_events: bool = false,
-    html5_bubble_touch_events: bool = false,
-    html5_bubble_wheel_events: bool = false,
-    html5_bubble_key_events: bool = false,
-    html5_bubble_char_events: bool = false,
-    html5_use_emsc_set_main_loop: bool = false,
-    html5_emsc_set_main_loop_simulate_infinite_loop: bool = false,
-    ios_keyboard_resizes_canvas: bool = false,
+    gl: GlDesc = .{},
+    win32: Win32Desc = .{},
+    html5: Html5Desc = .{},
+    ios: IosDesc = .{},
 };
 
 /// HTML5 specific: request and response structs for
@@ -1895,18 +2055,18 @@ pub fn heightf() f32 {
 }
 
 /// get default framebuffer color pixel format
-extern fn sapp_color_format() i32;
+extern fn sapp_color_format() PixelFormat;
 
 /// get default framebuffer color pixel format
-pub fn colorFormat() i32 {
+pub fn colorFormat() PixelFormat {
     return sapp_color_format();
 }
 
 /// get default framebuffer depth pixel format
-extern fn sapp_depth_format() i32;
+extern fn sapp_depth_format() PixelFormat;
 
 /// get default framebuffer depth pixel format
-pub fn depthFormat() i32 {
+pub fn depthFormat() PixelFormat {
     return sapp_depth_format();
 }
 
@@ -2150,6 +2310,22 @@ pub fn run(desc: Desc) void {
     sapp_run(&desc);
 }
 
+/// get runtime environment information
+extern fn sapp_get_environment() Environment;
+
+/// get runtime environment information
+pub fn getEnvironment() Environment {
+    return sapp_get_environment();
+}
+
+/// get current frame's swapchain information (call once per frame!)
+extern fn sapp_get_swapchain() Swapchain;
+
+/// get current frame's swapchain information (call once per frame!)
+pub fn getSwapchain() Swapchain {
+    return sapp_get_swapchain();
+}
+
 /// EGL: get EGLDisplay object
 extern fn sapp_egl_get_display() ?*const anyopaque;
 
@@ -2190,38 +2366,6 @@ pub fn html5FetchDroppedFile(request: Html5FetchRequest) void {
     sapp_html5_fetch_dropped_file(&request);
 }
 
-/// Metal: get bridged pointer to Metal device object
-extern fn sapp_metal_get_device() ?*const anyopaque;
-
-/// Metal: get bridged pointer to Metal device object
-pub fn metalGetDevice() ?*const anyopaque {
-    return sapp_metal_get_device();
-}
-
-/// Metal: get bridged pointer to MTKView's current drawable of type CAMetalDrawable
-extern fn sapp_metal_get_current_drawable() ?*const anyopaque;
-
-/// Metal: get bridged pointer to MTKView's current drawable of type CAMetalDrawable
-pub fn metalGetCurrentDrawable() ?*const anyopaque {
-    return sapp_metal_get_current_drawable();
-}
-
-/// Metal: get bridged pointer to MTKView's depth-stencil texture of type MTLTexture
-extern fn sapp_metal_get_depth_stencil_texture() ?*const anyopaque;
-
-/// Metal: get bridged pointer to MTKView's depth-stencil texture of type MTLTexture
-pub fn metalGetDepthStencilTexture() ?*const anyopaque {
-    return sapp_metal_get_depth_stencil_texture();
-}
-
-/// Metal: get bridged pointer to MTKView's msaa-color-texture of type MTLTexture (may be null)
-extern fn sapp_metal_get_msaa_color_texture() ?*const anyopaque;
-
-/// Metal: get bridged pointer to MTKView's msaa-color-texture of type MTLTexture (may be null)
-pub fn metalGetMsaaColorTexture() ?*const anyopaque {
-    return sapp_metal_get_msaa_color_texture();
-}
-
 /// macOS: get bridged pointer to macOS NSWindow
 extern fn sapp_macos_get_window() ?*const anyopaque;
 
@@ -2238,22 +2382,6 @@ pub fn iosGetWindow() ?*const anyopaque {
     return sapp_ios_get_window();
 }
 
-/// D3D11: get pointer to ID3D11Device object
-extern fn sapp_d3d11_get_device() ?*const anyopaque;
-
-/// D3D11: get pointer to ID3D11Device object
-pub fn d3d11GetDevice() ?*const anyopaque {
-    return sapp_d3d11_get_device();
-}
-
-/// D3D11: get pointer to ID3D11DeviceContext object
-extern fn sapp_d3d11_get_device_context() ?*const anyopaque;
-
-/// D3D11: get pointer to ID3D11DeviceContext object
-pub fn d3d11GetDeviceContext() ?*const anyopaque {
-    return sapp_d3d11_get_device_context();
-}
-
 /// D3D11: get pointer to IDXGISwapChain object
 extern fn sapp_d3d11_get_swap_chain() ?*const anyopaque;
 
@@ -2262,76 +2390,12 @@ pub fn d3d11GetSwapChain() ?*const anyopaque {
     return sapp_d3d11_get_swap_chain();
 }
 
-/// D3D11: get pointer to ID3D11RenderTargetView object for rendering
-extern fn sapp_d3d11_get_render_view() ?*const anyopaque;
-
-/// D3D11: get pointer to ID3D11RenderTargetView object for rendering
-pub fn d3d11GetRenderView() ?*const anyopaque {
-    return sapp_d3d11_get_render_view();
-}
-
-/// D3D11: get pointer ID3D11RenderTargetView object for msaa-resolve (may return null)
-extern fn sapp_d3d11_get_resolve_view() ?*const anyopaque;
-
-/// D3D11: get pointer ID3D11RenderTargetView object for msaa-resolve (may return null)
-pub fn d3d11GetResolveView() ?*const anyopaque {
-    return sapp_d3d11_get_resolve_view();
-}
-
-/// D3D11: get pointer ID3D11DepthStencilView
-extern fn sapp_d3d11_get_depth_stencil_view() ?*const anyopaque;
-
-/// D3D11: get pointer ID3D11DepthStencilView
-pub fn d3d11GetDepthStencilView() ?*const anyopaque {
-    return sapp_d3d11_get_depth_stencil_view();
-}
-
 /// Win32: get the HWND window handle
 extern fn sapp_win32_get_hwnd() ?*const anyopaque;
 
 /// Win32: get the HWND window handle
 pub fn win32GetHwnd() ?*const anyopaque {
     return sapp_win32_get_hwnd();
-}
-
-/// WebGPU: get WGPUDevice handle
-extern fn sapp_wgpu_get_device() ?*const anyopaque;
-
-/// WebGPU: get WGPUDevice handle
-pub fn wgpuGetDevice() ?*const anyopaque {
-    return sapp_wgpu_get_device();
-}
-
-/// WebGPU: get swapchain's WGPUTextureView handle for rendering
-extern fn sapp_wgpu_get_render_view() ?*const anyopaque;
-
-/// WebGPU: get swapchain's WGPUTextureView handle for rendering
-pub fn wgpuGetRenderView() ?*const anyopaque {
-    return sapp_wgpu_get_render_view();
-}
-
-/// WebGPU: get swapchain's MSAA-resolve WGPUTextureView (may return null)
-extern fn sapp_wgpu_get_resolve_view() ?*const anyopaque;
-
-/// WebGPU: get swapchain's MSAA-resolve WGPUTextureView (may return null)
-pub fn wgpuGetResolveView() ?*const anyopaque {
-    return sapp_wgpu_get_resolve_view();
-}
-
-/// WebGPU: get swapchain's WGPUTextureView for the depth-stencil surface
-extern fn sapp_wgpu_get_depth_stencil_view() ?*const anyopaque;
-
-/// WebGPU: get swapchain's WGPUTextureView for the depth-stencil surface
-pub fn wgpuGetDepthStencilView() ?*const anyopaque {
-    return sapp_wgpu_get_depth_stencil_view();
-}
-
-/// GL: get framebuffer object
-extern fn sapp_gl_get_framebuffer() u32;
-
-/// GL: get framebuffer object
-pub fn glGetFramebuffer() u32 {
-    return sapp_gl_get_framebuffer();
 }
 
 /// GL: get major version

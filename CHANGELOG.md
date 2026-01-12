@@ -4,6 +4,20 @@
 to the example code or the supported Zig version. For actual Sokol header changes, see the
 [sokol changelog](https://github.com/floooh/sokol/blob/master/CHANGELOG.md).
 
+### 05-Jan-2025
+
+The experimental doc-generation step has been removed, the generated docs
+never really were in a useful state, and the required `fixdoctar` tool would need
+to be ported to the new Zig IO system, which tbh is too much hassle for such a
+simple command line tool.
+
+### 06-Dec-2025
+
+Added sokol_gfx_imgui.h bindings (optional sokol-gfx debug/tracing UI).
+See PR https://github.com/floooh/sokol-zig/pull/142 for details.
+
+Many thanks to @robboito!
+
 ### 04-Sep-2025
 
 Updated to emsdk 4.0.14 and removed the `.use_offset_converter` option for the Emscripten

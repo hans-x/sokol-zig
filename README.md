@@ -1,10 +1,8 @@
-[![build](https://github.com/floooh/sokol-zig/actions/workflows/main.yml/badge.svg)](https://github.com/floooh/sokol-zig/actions/workflows/main.yml)[![Docs](https://github.com/floooh/sokol-zig/actions/workflows/docs.yml/badge.svg)](https://github.com/floooh/sokol-zig/actions/workflows/docs.yml)
-
-Auto-generated Zig bindings for the [sokol headers](https://github.com/floooh/sokol).
-
-[Auto-generated docs](https://floooh.github.io/sokol-zig-docs) (wip)
+[![build](https://github.com/floooh/sokol-zig/actions/workflows/main.yml/badge.svg)](https://github.com/floooh/sokol-zig/actions/workflows/main.yml)
 
 For Zig version 0.15+
+
+> NOTE: Emscripten support is currently thoroughly broken in the Zig 0.16 dev stdlib
 
 In case of breaking changes in Zig, the bindings might fall behind. Please don't hesitate to
 ping me via a Github issue, or even better, provide a PR :)
@@ -58,11 +56,20 @@ By default, the backend 3D API will be selected based on the target platform:
 - Windows: D3D11
 - Linux: GL
 
-To force the GL backend on macOS or Windows, build with ```-Dgl=true```:
+To force the GL backend on macOS or Windows, build with `-Dgl=true`:
 
 ```
 > zig build -Dgl=true run-clear
 ```
+
+To force the experimental Vulkan backend, build with `-Dvulkan=true`
+```
+> zig build -Dvulkan=true run-clear
+```
+
+> NOTE: Vulkan support is currently only supported on Linux, and
+> as of Zig 0.16.x there's an issue with the libvulkan.so DLL from the
+> Vulkan SDK (linking with the system Vulkan DLL appears to work)
 
 The ```clear``` sample prints the selected backend to the terminal:
 
@@ -407,9 +414,32 @@ The main steps to create Dear ImGui apps with sokol-zig are:
   that C compilation works (this needs to find the `cimgui.h` header)
 
     ```zig
-    dep_sokol.artifact("sokol_clib").addIncludePath(cimgui_root);
+    dep_sokol.artifact("sokol_clib").root_module.addIncludePath(cimgui_root);
     ```
 
 Also see the following example project:
+
+https://github.com/floooh/sokol-zig-imgui-sample/
+
+## Optional sokol-gfx tracing/debug ui
+
+On top of the Dear ImGui support outlined above, you can also integrate
+the sokol-gfx tracing/debug ui which is implemented in sokol_gfx_imgui.h.
+
+To do this, add the `.with_tracing = true` option when looking up
+the sokol-dependency, e.g.:
+
+    ```zig
+    const dep_sokol = b.dependency("sokol", .{
+        .target = target,
+        .optimize = optimize,
+        .with_sokol_imgui = true,
+        .with_tracing = true,
+    });
+    ```
+(note that `.with_tracing` also implicitly enables `.with_sokol_imgui`, so that's
+not strictly necessary)
+
+For an example of how to integrate the tracing/debug UI, see also:
 
 https://github.com/floooh/sokol-zig-imgui-sample/

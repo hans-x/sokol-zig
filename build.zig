@@ -37,6 +37,7 @@ pub const SokolBackend = enum {
     gl,
     gles3,
     wgpu,
+    vulkan,
 };
 
 pub const TargetPlatform = enum {
@@ -65,15 +66,17 @@ pub fn build(b: *Build) !void {
     const opt_use_gl = b.option(bool, "gl", "Force OpenGL (default: false)") orelse false;
     const opt_use_gles3 = b.option(bool, "gles3", "Force OpenGL ES3 (default: false)") orelse false;
     const opt_use_wgpu = b.option(bool, "wgpu", "Force WebGPU (default: false, web only)") orelse false;
+    const opt_use_vulkan = b.option(bool, "vulkan", "Force Vulkan (default: false)") orelse false;
     const opt_use_x11 = b.option(bool, "x11", "Force X11 (default: true, Linux only)") orelse true;
     const opt_use_wayland = b.option(bool, "wayland", "Force Wayland (default: false, Linux only, not supported in main-line headers)") orelse false;
     const opt_use_egl = b.option(bool, "egl", "Force EGL (default: false, Linux only)") orelse false;
     const opt_with_sokol_imgui = b.option(bool, "with_sokol_imgui", "Add support for sokol_imgui.h bindings") orelse false;
+    const opt_with_tracing = b.option(bool, "with_tracing", "Add support for sokol_gfx tracing and debug UI") orelse false;
     const opt_dont_link_system_libs = b.option(bool, "dont_link_system_libs", "Do not link system libraries required by sokol (default: false)") orelse false;
     const opt_sokol_imgui_cprefix = b.option([]const u8, "sokol_imgui_cprefix", "Override Dear ImGui C bindings prefix for sokol_imgui.h (see SOKOL_IMGUI_CPREFIX)");
     const opt_cimgui_header_path = b.option([]const u8, "cimgui_header_path", "Override the Dear ImGui C bindings header name (default: cimgui.h)");
     const opt_dynamic_linkage = b.option(bool, "dynamic_linkage", "Build sokol_clib artifact as dynamic link library.") orelse false;
-    const sokol_backend: SokolBackend = if (opt_use_gl) .gl else if (opt_use_gles3) .gles3 else if (opt_use_wgpu) .wgpu else .auto;
+    const sokol_backend: SokolBackend = if (opt_use_gl) .gl else if (opt_use_gles3) .gles3 else if (opt_use_wgpu) .wgpu else if (opt_use_vulkan) .vulkan else .auto;
 
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -89,7 +92,8 @@ pub fn build(b: *Build) !void {
         .use_wayland = opt_use_wayland,
         .use_x11 = opt_use_x11,
         .use_egl = opt_use_egl,
-        .with_sokol_imgui = opt_with_sokol_imgui,
+        .with_sokol_imgui = opt_with_sokol_imgui or opt_with_tracing,
+        .with_tracing = opt_with_tracing,
         .sokol_imgui_cprefix = opt_sokol_imgui_cprefix,
         .cimgui_header_path = opt_cimgui_header_path,
         .emsdk = emsdk,
@@ -105,8 +109,6 @@ pub fn build(b: *Build) !void {
         .mod_sokol = mod_sokol,
         .emsdk = emsdk,
     });
-    // a manually invoked build step to build auto-docs
-    buildDocs(b, target);
 }
 
 // helper function to resolve .auto backend based on target platform
@@ -137,6 +139,7 @@ pub const LibSokolOptions = struct {
     use_wayland: bool = false,
     emsdk: ?*Build.Dependency = null,
     with_sokol_imgui: bool = false,
+    with_tracing: bool = false,
     sokol_imgui_cprefix: ?[]const u8 = null,
     cimgui_header_path: ?[]const u8 = null,
     dont_link_system_libs: bool = true,
@@ -206,6 +209,9 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
     var cflags = std.ArrayListUnmanaged([]const u8).initBuffer(&cflags_buf);
 
     try cflags.appendBounded("-DIMPL");
+    if (options.with_tracing) {
+        try cflags.appendBounded("-DSOKOL_TRACE_HOOKS");
+    }
     if (options.optimize != .Debug) {
         try cflags.appendBounded("-DNDEBUG");
     }
@@ -215,6 +221,7 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
         .gl => try cflags.appendBounded("-DSOKOL_GLCORE"),
         .gles3 => try cflags.appendBounded("-DSOKOL_GLES3"),
         .wgpu => try cflags.appendBounded("-DSOKOL_WGPU"),
+        .vulkan => try cflags.appendBounded("-DSOKOL_VULKAN"),
         else => @panic("unknown sokol backend"),
     }
 
@@ -261,7 +268,11 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
         const link_egl = options.use_egl or options.use_wayland;
         if (link_system_libs) {
             mod.linkSystemLibrary("asound", .{});
-            mod.linkSystemLibrary("GL", .{});
+            if (.vulkan == backend) {
+                mod.linkSystemLibrary("vulkan", .{});
+            } else {
+                mod.linkSystemLibrary("GL", .{});
+            }
             if (options.use_x11) {
                 mod.linkSystemLibrary("X11", .{});
                 mod.linkSystemLibrary("Xi", .{});
@@ -313,6 +324,13 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
             .file = b.path(csrc_root ++ "sokol_imgui.c"),
             .flags = cflags.items,
         });
+
+        if (options.with_tracing) {
+            mod.addCSourceFile(.{
+                .file = b.path(csrc_root ++ "sokol_gfx_imgui.c"),
+                .flags = cflags.items,
+            });
+        }
     }
 
     // make sokol headers available to users of `sokol_clib` via `#include "sokol/sokol_gfx.h"
@@ -458,6 +476,15 @@ fn createEmsdkStep(b: *Build, emsdk: *Build.Dependency) *Build.Step.Run {
     }
 }
 
+fn fileExists(b: *Build, path: []const u8) !bool {
+    // FIXME: drop support for 0.15.x
+    if (builtin.zig_version.minor > 15) {
+        return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
+    } else {
+        return !std.meta.isError(std.fs.cwd().access(path, .{}));
+    }
+}
+
 // One-time setup of the Emscripten SDK (runs 'emsdk install + activate'). If the
 // SDK had to be setup, a run step will be returned which should be added
 // as dependency to the sokol library (since this needs the emsdk in place),
@@ -471,7 +498,7 @@ fn createEmsdkStep(b: *Build, emsdk: *Build.Dependency) *Build.Step.Run {
 // an .emscripten file yet until the one-time setup.
 fn emSdkSetupStep(b: *Build, emsdk: *Build.Dependency) !?*Build.Step.Run {
     const dot_emsc_path = emSdkLazyPath(b, emsdk, &.{".emscripten"}).getPath(b);
-    const dot_emsc_exists = !std.meta.isError(std.fs.accessAbsolute(dot_emsc_path, .{}));
+    const dot_emsc_exists = try fileExists(b, dot_emsc_path);
     if (!dot_emsc_exists) {
         const emsdk_install = createEmsdkStep(b, emsdk);
         emsdk_install.addArgs(&.{ "install", "latest" });
@@ -482,45 +509,6 @@ fn emSdkSetupStep(b: *Build, emsdk: *Build.Dependency) !?*Build.Step.Run {
     } else {
         return null;
     }
-}
-
-//== DOCUMENTATION =====================================================================================================
-fn buildDocs(b: *Build, target: Build.ResolvedTarget) void {
-    const lib = b.addLibrary(.{
-        .name = "sokol",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/sokol/sokol.zig"),
-            .target = target,
-            .optimize = .Debug,
-        }),
-    });
-    // need to invoke an external tool to inject custom functionality into a build step:
-    const tool = b.addExecutable(.{
-        .name = "fixdoctar",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/fixdoctar.zig"),
-            .target = b.graph.host,
-        }),
-    });
-    const tool_step = b.addRunArtifact(tool);
-    tool_step.addArgs(&.{ "--prefix", "sokol", "--input" });
-    tool_step.addDirectoryArg(lib.getEmittedDocs());
-    tool_step.addArg("--output");
-    const sources_tar = tool_step.addOutputFileArg("sources.tar");
-    tool_step.step.dependOn(&lib.step);
-
-    // install doc-gen output and the smaller sources.tar on top
-    const install_docs = b.addInstallDirectory(.{
-        .source_dir = lib.getEmittedDocs(),
-        .install_dir = .prefix,
-        .install_subdir = "docs",
-    });
-    install_docs.step.dependOn(&tool_step.step);
-    const overwrite_sources_tar = b.addInstallFile(sources_tar, "docs/sources.tar");
-    overwrite_sources_tar.step.dependOn(&install_docs.step);
-
-    const doc_step = b.step("docs", "Build documentation");
-    doc_step.dependOn(&overwrite_sources_tar.step);
 }
 
 //=== EXAMPLES =========================================================================================================
@@ -623,6 +611,7 @@ fn buildExampleShader(b: *Build, example: Example) !?*Build.Step {
             .metal_macos = true,
             .hlsl5 = true,
             .wgsl = true,
+            .spirv_vk = true,
         },
         .reflection = true,
     });
