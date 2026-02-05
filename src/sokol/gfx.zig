@@ -68,12 +68,26 @@
 // - on iOS with GL: OpenGLES
 // - on Linux with EGL: GL or GLESv2
 // - on Linux with GLX: GL
+// - on Linux with Vulkan: vulkan
 // - on Android: GLESv3, log, android
-// - on Windows with the MSVC or Clang toolchains: no action needed, libs are defined in-source via pragma-comment-lib
-// - on Windows with MINGW/MSYS2 gcc: compile with '-mwin32' so that _WIN32 is defined
-//     - with the D3D11 backend: -ld3d11
+// - on Windows:
+//     - with Vulkan: link with vulkan-1 (this is explicit in case you want to
+//       use your own Vulkan loader library)
+//     - with D3D11:
+//         - on MSVC or Clang: no action needed, libs are defined in-source via pragma-comment-lib
+//         - on MINGW/MSYS2 gcc: compile with '-mwin32' so that _WIN32 is defined and link with -ld3d11
+//     - with GL: no linking needed since sokol_gfx.h comes with its own GL loader on Windows
 //
 // On macOS and iOS, the implementation must be compiled as Objective-C.
+//
+// For Linux+Vulkan install the following packages (or equivalents):
+//     - libvulkan-dev
+//     - vulkan-validationlayers
+//     - vulkan-tools
+//
+// For Windows+Vulkan install the Vulkan SDK and in your build system:
+//     - add a header search path to $ENV{VULKAN_SDK}/Include
+//     - add a link search path to $ENV{VULKAN_SDK}/Env
 //
 // On Emscripten:
 //     - for WebGL2: add the linker option `-s USE_WEBGL2=1`
@@ -2199,6 +2213,7 @@ pub const Features = extern struct {
     separate_buffer_types: bool = false,
     draw_base_vertex: bool = false,
     draw_base_instance: bool = false,
+    dual_source_blending: bool = false,
     gl_texture_views: bool = false,
 };
 
@@ -2644,6 +2659,10 @@ pub const BlendFactor = enum(i32) {
     ONE_MINUS_BLEND_COLOR,
     BLEND_ALPHA,
     ONE_MINUS_BLEND_ALPHA,
+    SRC1_COLOR,
+    ONE_MINUS_SRC1_COLOR,
+    SRC1_ALPHA,
+    ONE_MINUS_SRC1_ALPHA,
     NUM,
 };
 
@@ -4319,6 +4338,7 @@ pub const LogItem = enum(i32) {
     VULKAN_STORAGEIMAGE_SPIRV_SET1_BINDING_OUT_OF_RANGE,
     VULKAN_SAMPLER_SPIRV_SET1_BINDING_OUT_OF_RANGE,
     VULKAN_CREATE_DESCRIPTOR_SET_LAYOUT_FAILED,
+    VULKAN_SHADER_UNIFORM_DESCRIPTOR_SET_SIZE_VS_CACHE_SIZE,
     VULKAN_CREATE_PIPELINE_LAYOUT_FAILED,
     VULKAN_CREATE_GRAPHICS_PIPELINE_FAILED,
     VULKAN_CREATE_COMPUTE_PIPELINE_FAILED,
@@ -4481,6 +4501,7 @@ pub const LogItem = enum(i32) {
     VALIDATE_PIPELINEDESC_ATTR_SEMANTICS,
     VALIDATE_PIPELINEDESC_SHADER_READONLY_STORAGEBUFFERS,
     VALIDATE_PIPELINEDESC_BLENDOP_MINMAX_REQUIRES_BLENDFACTOR_ONE,
+    VALIDATE_PIPELINEDESC_DUAL_SOURCE_BLENDING_NOT_SUPPORTED,
     VALIDATE_VIEWDESC_CANARY,
     VALIDATE_VIEWDESC_UNIQUE_VIEWTYPE,
     VALIDATE_VIEWDESC_ANY_VIEWTYPE,
@@ -4801,6 +4822,7 @@ pub const WgpuEnvironment = extern struct {
 };
 
 pub const VulkanEnvironment = extern struct {
+    instance: ?*const anyopaque = null,
     physical_device: ?*const anyopaque = null,
     device: ?*const anyopaque = null,
     queue: ?*const anyopaque = null,
@@ -5821,6 +5843,14 @@ extern fn sg_mtl_compute_command_encoder() ?*const anyopaque;
 /// Metal: return __bridge-casted MTLComputeCommandEncoder when inside compute pass (otherwise zero)
 pub fn mtlComputeCommandEncoder() ?*const anyopaque {
     return sg_mtl_compute_command_encoder();
+}
+
+/// Metal: return __bridge-casted MTLCommandQueue
+extern fn sg_mtl_command_queue() ?*const anyopaque;
+
+/// Metal: return __bridge-casted MTLCommandQueue
+pub fn mtlCommandQueue() ?*const anyopaque {
+    return sg_mtl_command_queue();
 }
 
 /// Metal: get internal __bridge-casted buffer resource objects

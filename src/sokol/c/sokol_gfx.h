@@ -70,12 +70,26 @@
     - on iOS with GL: OpenGLES
     - on Linux with EGL: GL or GLESv2
     - on Linux with GLX: GL
+    - on Linux with Vulkan: vulkan
     - on Android: GLESv3, log, android
-    - on Windows with the MSVC or Clang toolchains: no action needed, libs are defined in-source via pragma-comment-lib
-    - on Windows with MINGW/MSYS2 gcc: compile with '-mwin32' so that _WIN32 is defined
-        - with the D3D11 backend: -ld3d11
+    - on Windows:
+        - with Vulkan: link with vulkan-1 (this is explicit in case you want to
+          use your own Vulkan loader library)
+        - with D3D11:
+            - on MSVC or Clang: no action needed, libs are defined in-source via pragma-comment-lib
+            - on MINGW/MSYS2 gcc: compile with '-mwin32' so that _WIN32 is defined and link with -ld3d11
+        - with GL: no linking needed since sokol_gfx.h comes with its own GL loader on Windows
 
     On macOS and iOS, the implementation must be compiled as Objective-C.
+
+    For Linux+Vulkan install the following packages (or equivalents):
+        - libvulkan-dev
+        - vulkan-validationlayers
+        - vulkan-tools
+
+    For Windows+Vulkan install the Vulkan SDK and in your build system:
+        - add a header search path to $ENV{VULKAN_SDK}/Include
+        - add a link search path to $ENV{VULKAN_SDK}/Env
 
     On Emscripten:
         - for WebGL2: add the linker option `-s USE_WEBGL2=1`
@@ -2212,6 +2226,7 @@ typedef struct sg_features {
     bool separate_buffer_types;         // cannot use the same buffer for vertex and indices (only WebGL2)
     bool draw_base_vertex;              // draw with (base vertex > 0) && (base_instance == 0) supported
     bool draw_base_instance;            // draw with (base instance > 0) supported
+    bool dual_source_blending;          // dual-source-blending supported
     bool gl_texture_views;              // supports 'proper' texture views (GL 4.3+)
 } sg_features;
 
@@ -2712,6 +2727,10 @@ typedef enum sg_blend_factor {
     SG_BLENDFACTOR_ONE_MINUS_BLEND_COLOR,
     SG_BLENDFACTOR_BLEND_ALPHA,
     SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA,
+    SG_BLENDFACTOR_SRC1_COLOR,
+    SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR,
+    SG_BLENDFACTOR_SRC1_ALPHA,
+    SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA,
     _SG_BLENDFACTOR_NUM,
     _SG_BLENDFACTOR_FORCE_U32 = 0x7FFFFFFF
 } sg_blend_factor;
@@ -4452,6 +4471,7 @@ typedef struct sg_stats {
     _SG_LOGITEM_XMACRO(VULKAN_STORAGEIMAGE_SPIRV_SET1_BINDING_OUT_OF_RANGE, "vulkan: storage image 'spirv_set1_binding_n' is out of range (must be 0..127)") \
     _SG_LOGITEM_XMACRO(VULKAN_SAMPLER_SPIRV_SET1_BINDING_OUT_OF_RANGE, "vulkan: sampler 'spirv_set1_binding_n' is out of range (must be 0..127)") \
     _SG_LOGITEM_XMACRO(VULKAN_CREATE_DESCRIPTOR_SET_LAYOUT_FAILED, "vulkan: vkCreateDescriptorSetLayout() failed!") \
+    _SG_LOGITEM_XMACRO(VULKAN_SHADER_UNIFORM_DESCRIPTOR_SET_SIZE_VS_CACHE_SIZE, "vulkan: shader uniform descriptor set is too big for the descriptor set cache (please write a Github issue)") \
     _SG_LOGITEM_XMACRO(VULKAN_CREATE_PIPELINE_LAYOUT_FAILED, "vulkan: vkCreatePipelineLayout() failed!") \
     _SG_LOGITEM_XMACRO(VULKAN_CREATE_GRAPHICS_PIPELINE_FAILED, "vulkan: vkCreateGraphicsPipelines() failed!") \
     _SG_LOGITEM_XMACRO(VULKAN_CREATE_COMPUTE_PIPELINE_FAILED, "vulkan: vkCreateComputePipelines() failed!") \
@@ -4614,6 +4634,7 @@ typedef struct sg_stats {
     _SG_LOGITEM_XMACRO(VALIDATE_PIPELINEDESC_ATTR_SEMANTICS, "D3D11 missing vertex attribute semantics in shader") \
     _SG_LOGITEM_XMACRO(VALIDATE_PIPELINEDESC_SHADER_READONLY_STORAGEBUFFERS, "sg_pipeline_desc.shader: only readonly storage buffer bindings allowed in render pipelines") \
     _SG_LOGITEM_XMACRO(VALIDATE_PIPELINEDESC_BLENDOP_MINMAX_REQUIRES_BLENDFACTOR_ONE, "SG_BLENDOP_MIN/MAX requires all blend factors to be SG_BLENDFACTOR_ONE") \
+    _SG_LOGITEM_XMACRO(VALIDATE_PIPELINEDESC_DUAL_SOURCE_BLENDING_NOT_SUPPORTED, "dual source blending not supported (sg_features.dual_source_blending)") \
     _SG_LOGITEM_XMACRO(VALIDATE_VIEWDESC_CANARY, "sg_view_desc not initialized") \
     _SG_LOGITEM_XMACRO(VALIDATE_VIEWDESC_UNIQUE_VIEWTYPE, "sg_view_desc: only one view type can be active") \
     _SG_LOGITEM_XMACRO(VALIDATE_VIEWDESC_ANY_VIEWTYPE, "sg_view_desc: exactly one view type must be active") \
@@ -4941,6 +4962,7 @@ typedef struct sg_wgpu_environment {
 } sg_wgpu_environment;
 
 typedef struct sg_vulkan_environment {
+    const void* instance;
     const void* physical_device;
     const void* device;
     const void* queue;
@@ -5323,6 +5345,8 @@ SOKOL_GFX_API_DECL const void* sg_mtl_device(void);
 SOKOL_GFX_API_DECL const void* sg_mtl_render_command_encoder(void);
 // Metal: return __bridge-casted MTLComputeCommandEncoder when inside compute pass (otherwise zero)
 SOKOL_GFX_API_DECL const void* sg_mtl_compute_command_encoder(void);
+// Metal: return __bridge-casted MTLCommandQueue
+SOKOL_GFX_API_DECL const void* sg_mtl_command_queue(void);
 // Metal: get internal __bridge-casted buffer resource objects
 SOKOL_GFX_API_DECL sg_mtl_buffer_info sg_mtl_query_buffer_info(sg_buffer buf);
 // Metal: get internal __bridge-casted image resource objects
@@ -5579,7 +5603,11 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
                 #include <GLES3/gl3.h>
             #endif
         #elif defined(__ANDROID__)
-            #include <GLES3/gl31.h>
+            #if __ANDROID_API__ >= 24
+                #include <GLES3/gl32.h>
+            #else
+                #include <GLES3/gl31.h>
+            #endif
         #elif defined(__linux__) || defined(__unix__)
             #if defined(SOKOL_GLCORE)
                 #define GL_GLEXT_PROTOTYPES
@@ -5593,6 +5621,7 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
 
     // broad GL feature availability defines (DON'T merge this into the above ifdef-block!)
     #if defined(_WIN32)
+        #define _SOKOL_GL_HAS_COLORMASKI (1)
         #if defined(GL_VERSION_4_3) || defined(_SOKOL_USE_WIN32_GL_LOADER)
             #define _SOKOL_GL_HAS_COMPUTE (1)
             #define _SOKOL_GL_HAS_TEXVIEWS (1)
@@ -5601,12 +5630,17 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
             #define _SOKOL_GL_HAS_TEXSTORAGE (1)
             #define _SOKOL_GL_HAS_BASEINSTANCE (1)
         #endif
+        #if defined(GL_VERSION_3_3) || defined(_SOKOL_USE_WIN32_GL_LOADER)
+            #define _SOKOL_GL_HAS_DUALSOURCEBLENDING (1)
+        #endif
         #if defined(GL_VERSION_3_2) || defined(_SOKOL_USE_WIN32_GL_LOADER)
             #define _SOKOL_GL_HAS_BASEVERTEX (1)
         #endif
     #elif defined(__APPLE__)
         #if defined(TARGET_OS_IPHONE) && !TARGET_OS_IPHONE
+            #define _SOKOL_GL_HAS_COLORMASKI (1)
             #define _SOKOL_GL_HAS_BASEVERTEX (1)
+            #define _SOKOL_GL_HAS_DUALSOURCEBLENDING (1)
         #else
             #define _SOKOL_GL_HAS_TEXSTORAGE (1)
         #endif
@@ -5615,7 +5649,11 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
     #elif defined(__ANDROID__)
         #define _SOKOL_GL_HAS_COMPUTE (1)
         #define _SOKOL_GL_HAS_TEXSTORAGE (1)
+        #if defined(GL_ES_VERSION_3_2)
+            #define _SOKOL_GL_HAS_COLORMASKI (1)
+        #endif
     #elif defined(__linux__) || defined(__unix__)
+        #define _SOKOL_GL_HAS_COLORMASKI (1)
         #if defined(SOKOL_GLCORE)
             #if defined(GL_VERSION_4_3)
                 #define _SOKOL_GL_HAS_COMPUTE (1)
@@ -5624,6 +5662,9 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
             #if defined(GL_VERSION_4_2)
                 #define _SOKOL_GL_HAS_TEXSTORAGE (1)
                 #define _SOKOL_GL_HAS_BASEINSTANCE (1)
+            #endif
+            #if defined(GL_VERSION_3_3)
+                #define _SOKOL_GL_HAS_DUALSOURCEBLENDING (1)
             #endif
             #if defined(GL_VERSION_3_2)
                 #define _SOKOL_GL_HAS_BASEVERTEX (1)
@@ -5743,6 +5784,10 @@ inline int sg_append_buffer(sg_buffer buf_id, const sg_range& data) { return sg_
         #define GL_ONE_MINUS_CONSTANT_ALPHA 0x8004
         #define GL_NONE 0
         #define GL_SRC_COLOR 0x0300
+        #define GL_SRC1_ALPHA 0x8589
+        #define GL_SRC1_COLOR 0x88F9
+        #define GL_ONE_MINUS_SRC1_ALPHA 0x88FB
+        #define GL_ONE_MINUS_SRC1_COLOR 0x88FA
         #define GL_BYTE 0x1400
         #define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z 0x851A
         #define GL_LINE_STRIP 0x0003
@@ -7067,12 +7112,8 @@ typedef struct {
 } _sg_vk_shared_buffer_t;
 
 typedef struct {
-    VkDescriptorAddressInfoEXT addr_info;
-    VkDescriptorGetInfoEXT get_info;
-} _sg_vk_uniform_bindinfo_t;
-
-typedef struct {
     bool valid;
+    VkInstance instance;
     VkPhysicalDevice phys_dev;
     VkDevice dev;
     VkQueue queue;
@@ -7083,6 +7124,7 @@ typedef struct {
 
     // extension function pointers
     struct {
+        PFN_vkSetDebugUtilsObjectNameEXT set_debug_utils_object_name_ext;
         PFN_vkGetDescriptorSetLayoutSizeEXT get_descriptor_set_layout_size;
         PFN_vkGetDescriptorSetLayoutBindingOffsetEXT get_descriptor_set_layout_binding_offset;
         PFN_vkGetDescriptorEXT get_descriptor;
@@ -7116,9 +7158,14 @@ typedef struct {
         _sg_vk_shared_buffer_t stream;
     } stage;
     // uniform update system
-    bool uniforms_dirty;
-    _sg_vk_shared_buffer_t uniform;
-    _sg_vk_uniform_bindinfo_t uniform_bindinfos[SG_MAX_UNIFORMBLOCK_BINDSLOTS];
+    struct {
+        bool dirty;
+        _sg_vk_shared_buffer_t dbuf;    // descriptor buffer
+        VkDescriptorAddressInfoEXT addr_info[SG_MAX_UNIFORMBLOCK_BINDSLOTS];
+        VkDescriptorGetInfoEXT get_info[SG_MAX_UNIFORMBLOCK_BINDSLOTS];
+        size_t dset_cache_size;
+        uint8_t* dset_cache;
+    } uniforms;
     // resource binding system (using descriptor buffers)
     _sg_vk_shared_buffer_t bind;
     // hazard tracking system for buffers and images
@@ -8028,6 +8075,18 @@ _SOKOL_PRIVATE bool _sg_attachments_alive(const _sg_attachments_ptrs_t* atts_ptr
         return false;
     }
     return true;
+}
+
+_SOKOL_PRIVATE bool _sg_is_dualsource_blendfactor(sg_blend_factor f) {
+    switch (f) {
+        case SG_BLENDFACTOR_SRC1_COLOR:
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:
+        case SG_BLENDFACTOR_SRC1_ALPHA:
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:
+            return true;
+        default:
+            return false;
+    }
 }
 
 _SOKOL_PRIVATE void _sg_buffer_common_init(_sg_buffer_common_t* cmn, const sg_buffer_desc* desc) {
@@ -9368,6 +9427,12 @@ _SOKOL_PRIVATE GLenum _sg_gl_blend_factor(sg_blend_factor f) {
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_COLOR:  return GL_ONE_MINUS_CONSTANT_COLOR;
         case SG_BLENDFACTOR_BLEND_ALPHA:            return GL_CONSTANT_ALPHA;
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA:  return GL_ONE_MINUS_CONSTANT_ALPHA;
+        #if defined(_SOKOL_GL_HAS_DUALSOURCEBLENDING)
+        case SG_BLENDFACTOR_SRC1_COLOR:             return GL_SRC1_COLOR;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:   return GL_ONE_MINUS_SRC1_COLOR;
+        case SG_BLENDFACTOR_SRC1_ALPHA:             return GL_SRC1_ALPHA;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:   return GL_ONE_MINUS_SRC1_ALPHA;
+        #endif
         default: SOKOL_UNREACHABLE; return 0;
     }
 }
@@ -9917,6 +9982,7 @@ _SOKOL_PRIVATE void _sg_gl_init_caps_glcore(void) {
     #endif
     _sg.features.draw_base_vertex = version >= 320;
     _sg.features.draw_base_instance = version >= 420;
+    _sg.features.dual_source_blending = version >= 330;
 
     // scan extensions
     bool has_s3tc = false;  // BC1..BC3
@@ -9990,7 +10056,11 @@ _SOKOL_PRIVATE void _sg_gl_init_caps_gles3(void) {
     _sg.features.origin_top_left = false;
     _sg.features.image_clamp_to_border = false;
     _sg.features.mrt_independent_blend_state = false;
+    #if defined(_SOKOL_GL_HAS_COLORMASKI)
+    _sg.features.mrt_independent_write_mask = version >= 320;
+    #else
     _sg.features.mrt_independent_write_mask = false;
+    #endif
     _sg.features.compute = version >= 310;
     _sg.features.msaa_texture_bindings = false;
     _sg.features.gl_texture_views = version >= 430;
@@ -10001,6 +10071,7 @@ _SOKOL_PRIVATE void _sg_gl_init_caps_gles3(void) {
     #endif
     _sg.features.draw_base_vertex = version >= 320;
     _sg.features.draw_base_instance = false;
+    _sg.features.dual_source_blending = false;
 
     bool has_s3tc = false;  // BC1..BC3
     bool has_rgtc = false;  // BC4 and BC5
@@ -11365,6 +11436,14 @@ _SOKOL_PRIVATE void _sg_gl_begin_pass(const sg_pass* pass, const _sg_attachments
             glFramebufferTexture2D(GL_FRAMEBUFFER, gl_att_type, GL_TEXTURE_2D, 0, 0);
         }
         if (atts->ds_view) {
+            // When switching between depth-only and depth-stencil attachments,
+            // explicitly detach BOTH attachment types first. Some GL drivers
+            // fail with GL_FRAMEBUFFER_UNSUPPORTED if both attachment types
+            // are bound to the same FBO.
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
             const _sg_view_t* view = atts->ds_view;
             const _sg_image_t* img = _sg_image_ref_ptr(&view->cmn.img.ref);
             const GLenum gl_att_type = _sg_gl_depth_stencil_attachment_type(img);
@@ -11701,20 +11780,23 @@ _SOKOL_PRIVATE void _sg_gl_apply_render_pipeline_state(_sg_pipeline_t* pip) {
             if (pip->gl.color_write_mask[i] != _sg.gl.cache.color_write_mask[i]) {
                 const sg_color_mask cm = pip->gl.color_write_mask[i];
                 _sg.gl.cache.color_write_mask[i] = cm;
-                #ifdef SOKOL_GLCORE
+                if (_sg.features.mrt_independent_write_mask) {
+                    #if defined(_SOKOL_GL_HAS_COLORMASKI)
                     glColorMaski(i,
                                 (cm & SG_COLORMASK_R) != 0,
                                 (cm & SG_COLORMASK_G) != 0,
                                 (cm & SG_COLORMASK_B) != 0,
                                 (cm & SG_COLORMASK_A) != 0);
-                #else
-                    if (0 == i) {
-                        glColorMask((cm & SG_COLORMASK_R) != 0,
-                                    (cm & SG_COLORMASK_G) != 0,
-                                    (cm & SG_COLORMASK_B) != 0,
-                                    (cm & SG_COLORMASK_A) != 0);
-                    }
-                #endif
+                    #else
+                    // can't happen
+                    SOKOL_ASSERT(false);
+                    #endif
+                } else if (0 == i) {
+                    glColorMask((cm & SG_COLORMASK_R) != 0,
+                                (cm & SG_COLORMASK_G) != 0,
+                                (cm & SG_COLORMASK_B) != 0,
+                                (cm & SG_COLORMASK_A) != 0);
+                }
                 _sg_stats_inc(gl.num_render_state);
             }
         }
@@ -12933,6 +13015,10 @@ _SOKOL_PRIVATE D3D11_BLEND _sg_d3d11_blend_factor(sg_blend_factor f) {
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_COLOR:  return D3D11_BLEND_INV_BLEND_FACTOR;
         case SG_BLENDFACTOR_BLEND_ALPHA:            return D3D11_BLEND_BLEND_FACTOR;
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA:  return D3D11_BLEND_INV_BLEND_FACTOR;
+        case SG_BLENDFACTOR_SRC1_COLOR:             return D3D11_BLEND_SRC1_COLOR;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:   return D3D11_BLEND_INV_SRC1_COLOR;
+        case SG_BLENDFACTOR_SRC1_ALPHA:             return D3D11_BLEND_SRC1_ALPHA;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:   return D3D11_BLEND_INV_SRC1_ALPHA;
         default: SOKOL_UNREACHABLE; return (D3D11_BLEND) 0;
     }
 }
@@ -12989,6 +13075,7 @@ _SOKOL_PRIVATE void _sg_d3d11_init_caps(void) {
     _sg.features.msaa_texture_bindings = true;
     _sg.features.draw_base_vertex = true;
     _sg.features.draw_base_instance = true;
+    _sg.features.dual_source_blending = true;
 
     _sg.limits.max_image_size_2d = 16 * 1024;
     _sg.limits.max_image_size_cube = 16 * 1024;
@@ -14664,6 +14751,10 @@ _SOKOL_PRIVATE MTLBlendFactor _sg_mtl_blend_factor(sg_blend_factor f) {
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_COLOR:  return MTLBlendFactorOneMinusBlendColor;
         case SG_BLENDFACTOR_BLEND_ALPHA:            return MTLBlendFactorBlendAlpha;
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA:  return MTLBlendFactorOneMinusBlendAlpha;
+        case SG_BLENDFACTOR_SRC1_COLOR:             return MTLBlendFactorSource1Color;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:   return MTLBlendFactorOneMinusSource1Color;
+        case SG_BLENDFACTOR_SRC1_ALPHA:             return MTLBlendFactorSource1Alpha;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:   return MTLBlendFactorOneMinusSource1Alpha;
         default: SOKOL_UNREACHABLE; return (MTLBlendFactor)0;
     }
 }
@@ -14948,6 +15039,7 @@ _SOKOL_PRIVATE void _sg_mtl_init_caps(void) {
     _sg.features.msaa_texture_bindings = true;
     _sg.features.draw_base_vertex = true;
     _sg.features.draw_base_instance = true;
+    _sg.features.dual_source_blending = true;
 
     _sg.features.image_clamp_to_border = false;
     #if (MAC_OS_X_VERSION_MAX_ALLOWED >= 120000) || (__IPHONE_OS_VERSION_MAX_ALLOWED >= 140000)
@@ -16919,6 +17011,10 @@ _SOKOL_PRIVATE WGPUBlendFactor _sg_wgpu_blendfactor(sg_blend_factor f) {
         // FIXME: separate blend alpha value not supported?
         case SG_BLENDFACTOR_BLEND_ALPHA:            return WGPUBlendFactor_Constant;
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA:  return WGPUBlendFactor_OneMinusConstant;
+        case SG_BLENDFACTOR_SRC1_COLOR:             return WGPUBlendFactor_Src1 ;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:   return WGPUBlendFactor_OneMinusSrc1;
+        case SG_BLENDFACTOR_SRC1_ALPHA:             return WGPUBlendFactor_Src1Alpha;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:   return WGPUBlendFactor_OneMinusSrc1Alpha;
         default:
             SOKOL_UNREACHABLE;
             return WGPUBlendFactor_Force32;
@@ -16961,6 +17057,7 @@ _SOKOL_PRIVATE void _sg_wgpu_init_caps(void) {
     _sg.features.msaa_texture_bindings = true;
     _sg.features.draw_base_vertex = true;
     _sg.features.draw_base_instance = true;
+    _sg.features.dual_source_blending = wgpuDeviceHasFeature(_sg.wgpu.dev, WGPUFeatureName_DualSourceBlending);
 
     wgpuDeviceGetLimits(_sg.wgpu.dev, &_sg.wgpu.limits);
 
@@ -18579,12 +18676,24 @@ _SOKOL_PRIVATE void _sg_wgpu_update_image(_sg_image_t* img, const sg_image_data*
 #elif defined(SOKOL_VULKAN)
 
 _SOKOL_PRIVATE void _sg_vk_set_object_label(VkObjectType obj_type, uint64_t obj_handle, const char* label) {
-    SOKOL_ASSERT(_sg.vk.dev);
-    SOKOL_ASSERT(obj_handle != 0);
-    if (label) {
-        // FIXME: use vkSetDebugUtilsObjectNamesEXT
-        _SOKOL_UNUSED(obj_type && obj_handle && label);
-    }
+    #if defined(SOKOL_DEBUG)
+        SOKOL_ASSERT(_sg.vk.dev);
+        SOKOL_ASSERT(_sg.vk.ext.set_debug_utils_object_name_ext);
+        SOKOL_ASSERT(obj_handle != 0);
+        if (label) {
+            _SG_STRUCT(VkDebugUtilsObjectNameInfoEXT, name_info);
+            name_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+            name_info.objectType = obj_type;
+            name_info.objectHandle = obj_handle,
+            name_info.pObjectName = label;
+            VkResult res = _sg.vk.ext.set_debug_utils_object_name_ext(_sg.vk.dev, &name_info);
+            SOKOL_ASSERT(res == VK_SUCCESS);
+        }
+    #else
+        _SOKOL_UNUSED(obj_type);
+        _SOKOL_UNUSED(obj_handle);
+        _SOKOL_UNUSED(label);
+    #endif
 }
 
 _SOKOL_PRIVATE bool _sg_vk_is_read_access(_sg_vk_access_t access) {
@@ -19101,7 +19210,7 @@ _SOKOL_PRIVATE VkDeviceMemory _sg_vk_mem_alloc_device_memory(_sg_vk_memtype_t me
     VkDeviceMemory vk_dev_mem = 0;
     VkResult res = vkAllocateMemory(_sg.vk.dev, &alloc_info, 0, &vk_dev_mem);
     _sg_stats_inc(vk.num_allocate_memory);
-    _sg_stats_add(vk.size_allocate_memory, mem_reqs->size);
+    _sg_stats_add(vk.size_allocate_memory, (uint32_t)mem_reqs->size);
     if (res != VK_SUCCESS) {
         _SG_ERROR(VULKAN_ALLOCATE_MEMORY_FAILED);
         return 0;
@@ -19511,7 +19620,7 @@ _SOKOL_PRIVATE void _sg_vk_staging_copy_buffer_data(_sg_buffer_t* buf, const sg_
             bytes_remaining = 0;
         }
         region.size = bytes_to_copy;
-        _sg_vk_staging_map_memcpy_unmap(dst_mem, src_ptr, bytes_to_copy);
+        _sg_vk_staging_map_memcpy_unmap(dst_mem, src_ptr, (uint32_t)bytes_to_copy);
         VkCommandBuffer cmd_buf = _sg_vk_staging_copy_begin();
         vkCmdCopyBuffer(cmd_buf, src_buf, dst_buf, 1, &region);
         _sg_stats_inc(vk.num_cmd_copy_buffer);
@@ -19640,7 +19749,7 @@ _SOKOL_PRIVATE void _sg_vk_staging_stream_buffer_data(_sg_buffer_t* buf, const s
     SOKOL_ASSERT(src_data && src_data->ptr && (src_data->size > 0));
     SOKOL_ASSERT((src_data->size + dst_offset) <= (size_t)buf->cmn.size);
 
-    const uint32_t src_offset = _sg_vk_shared_buffer_memcpy(&_sg.vk.stage.stream, src_data->ptr, src_data->size);
+    const uint32_t src_offset = (uint32_t)_sg_vk_shared_buffer_memcpy(&_sg.vk.stage.stream, src_data->ptr, (uint32_t)src_data->size);
     if (src_offset == _SG_VK_SHARED_BUFFER_OVERFLOW_RESULT) {
         _SG_ERROR(VULKAN_STAGING_STREAM_BUFFER_OVERFLOW);
         return;
@@ -19675,7 +19784,7 @@ _SOKOL_PRIVATE void _sg_vk_staging_stream_image_data(_sg_image_t* img, const sg_
         const sg_range* src_mip = &src_data->mip_levels[mip_index];
         SOKOL_ASSERT(src_mip->ptr);
         SOKOL_ASSERT(src_mip->size > 0);
-        const uint32_t src_offset = _sg_vk_shared_buffer_memcpy(&_sg.vk.stage.stream, src_mip->ptr, src_mip->size);
+        const uint32_t src_offset = (uint32_t)_sg_vk_shared_buffer_memcpy(&_sg.vk.stage.stream, src_mip->ptr, (uint32_t)src_mip->size);
         if (src_offset == _SG_VK_SHARED_BUFFER_OVERFLOW_RESULT) {
             _SG_ERROR(VULKAN_STAGING_STREAM_BUFFER_OVERFLOW);
             _sg_vk_image_barrier(cmd_buf, img, _SG_VK_ACCESS_TEXTURE);
@@ -19704,44 +19813,53 @@ _SOKOL_PRIVATE void _sg_vk_staging_stream_image_data(_sg_image_t* img, const sg_
 // uniform data system
 _SOKOL_PRIVATE void _sg_vk_uniform_init(void) {
     SOKOL_ASSERT(_sg.desc.uniform_buffer_size > 0);
-    _sg_vk_shared_buffer_init(&_sg.vk.uniform,
+    SOKOL_ASSERT(0 == _sg.vk.uniforms.dset_cache);
+
+    _sg_vk_shared_buffer_init(&_sg.vk.uniforms.dbuf,
         (uint32_t)_sg.desc.uniform_buffer_size,
-        _sg.vk.dev_props.properties.limits.minUniformBufferOffsetAlignment,
+        (uint32_t)_sg.vk.dev_props.properties.limits.minUniformBufferOffsetAlignment,
         _SG_VK_MEMTYPE_UNIFORMS,
         "shared-uniform-buffer");
+
     for (size_t i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; i++) {
-        _sg_vk_uniform_bindinfo_t* ubi = &_sg.vk.uniform_bindinfos[i];
-        ubi->addr_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT;
-        ubi->get_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
-        ubi->get_info.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        ubi->get_info.data.pUniformBuffer = &ubi->addr_info;
+        _sg.vk.uniforms.addr_info[i].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT;
+        _sg.vk.uniforms.get_info[i].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+        _sg.vk.uniforms.get_info[i].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        _sg.vk.uniforms.get_info[i].data.pUniformBuffer = &_sg.vk.uniforms.addr_info[i];
     }
+
+    // NOTE: we assume here that the max alignment for uniform buffer
+    // descriptors in the descriptor buffer is the same as the assumed max
+    // descriptor size (e.g. 256 bytes)
+    _sg.vk.uniforms.dset_cache_size = SG_MAX_UNIFORMBLOCK_BINDSLOTS * _SG_VK_MAX_DESCRIPTOR_DATA_SIZE;
+    _sg.vk.uniforms.dset_cache = (uint8_t*)_sg_malloc_clear(_sg.vk.uniforms.dset_cache_size);
 }
 
 _SOKOL_PRIVATE void _sg_vk_uniform_discard(void) {
-    _sg_vk_shared_buffer_discard(&_sg.vk.uniform);
+    SOKOL_ASSERT(_sg.vk.uniforms.dset_cache);
+    _sg_free(_sg.vk.uniforms.dset_cache); _sg.vk.uniforms.dset_cache = 0;
+    _sg_vk_shared_buffer_discard(&_sg.vk.uniforms.dbuf);
 }
 
 // called from _sg_vk_acquire_frame_command_buffer()
 _SOKOL_PRIVATE void _sg_vk_uniform_after_acquire(void) {
-    _sg_vk_shared_buffer_after_acquire(&_sg.vk.uniform);
+    _sg_vk_shared_buffer_after_acquire(&_sg.vk.uniforms.dbuf);
     // reset uniform tracking data
     for (size_t i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; i++) {
-        _sg_vk_uniform_bindinfo_t* ubi = &_sg.vk.uniform_bindinfos[i];
-        ubi->addr_info.address = 0;
-        ubi->addr_info.range = 0;
+        _sg.vk.uniforms.addr_info[i].address = 0;
+        _sg.vk.uniforms.addr_info[i].range = 0;
     }
 }
 
 // called from _sg_vk_submit_frame_command_buffer()
 _SOKOL_PRIVATE void _sg_vk_uniform_before_submit(void) {
-    _sg_vk_shared_buffer_before_submit(&_sg.vk.uniform);
+    _sg_vk_shared_buffer_before_submit(&_sg.vk.uniforms.dbuf);
 }
 
 // called form _sg_vk_apply_uniforms, returns offset of data snippet into uniform buffer
 _SOKOL_PRIVATE uint32_t _sg_vk_uniform_copy(const sg_range* data) {
     SOKOL_ASSERT(data && data->ptr && (data->size > 0));
-    return _sg_vk_shared_buffer_memcpy(&_sg.vk.uniform, data->ptr, data->size);
+    return (uint32_t)_sg_vk_shared_buffer_memcpy(&_sg.vk.uniforms.dbuf, data->ptr, (uint32_t)data->size);
 }
 
 // resource binding system
@@ -19749,7 +19867,7 @@ _SOKOL_PRIVATE void _sg_vk_bind_init(void) {
     SOKOL_ASSERT(_sg.desc.vulkan.descriptor_buffer_size > 0);
     _sg_vk_shared_buffer_init(&_sg.vk.bind,
         (uint32_t)_sg.desc.vulkan.descriptor_buffer_size,
-        _sg.vk.descriptor_buffer_props.descriptorBufferOffsetAlignment,
+        (uint32_t)_sg.vk.descriptor_buffer_props.descriptorBufferOffsetAlignment,
         _SG_VK_MEMTYPE_DESCRIPTORS,
         "shared-descriptor-buffer");
 }
@@ -19791,12 +19909,12 @@ _SOKOL_PRIVATE bool _sg_vk_bind_view_smp_descriptor_set(VkCommandBuffer cmd_buf,
         // nothing to bind
         return true;
     }
-    const VkDeviceSize dbuf_offset = _sg_vk_shared_buffer_alloc(&_sg.vk.bind, dset_size);
+    const VkDeviceSize dbuf_offset = _sg_vk_shared_buffer_alloc(&_sg.vk.bind, (uint32_t)dset_size);
     if (_sg.vk.bind.overflown) {
         _SG_ERROR(VULKAN_DESCRIPTOR_BUFFER_OVERFLOW);
         return false;
     }
-    _sg_stats_add(vk.size_descriptor_buffer_writes, dset_size);
+    _sg_stats_add(vk.size_descriptor_buffer_writes, (uint32_t)dset_size);
     uint8_t* dbuf_ptr = _sg_vk_shared_buffer_ptr(&_sg.vk.bind, dbuf_offset);
 
     // copy pre-recorded descriptor data into descriptor buffer
@@ -19840,30 +19958,23 @@ _SOKOL_PRIVATE bool _sg_vk_bind_view_smp_descriptor_set(VkCommandBuffer cmd_buf,
 
 _SOKOL_PRIVATE bool _sg_vk_bind_uniform_descriptor_set(VkCommandBuffer cmd_buf) {
     SOKOL_ASSERT(cmd_buf);
-    SOKOL_ASSERT(_sg.vk.uniforms_dirty);
-    _sg.vk.uniforms_dirty = false;
+    SOKOL_ASSERT(_sg.vk.uniforms.dirty);
+    _sg.vk.uniforms.dirty = false;
     const _sg_pipeline_t* pip = _sg_pipeline_ref_ptr(&_sg.cur_pip);
     const _sg_shader_t* shd = _sg_shader_ref_ptr(&pip->cmn.shader);
 
     // get next pointer in descriptor buffer
-    const VkDeviceSize dbuf_offset = _sg_vk_shared_buffer_alloc(&_sg.vk.bind, shd->vk.ub_dset_size);
+    const VkDeviceSize dbuf_offset = _sg_vk_shared_buffer_alloc(&_sg.vk.bind, (uint32_t)shd->vk.ub_dset_size);
     if (_sg.vk.bind.overflown) {
         _SG_ERROR(VULKAN_DESCRIPTOR_BUFFER_OVERFLOW);
         return false;
     }
-    _sg_stats_add(vk.size_descriptor_buffer_writes, shd->vk.ub_dset_size);
+    _sg_stats_add(vk.size_descriptor_buffer_writes, (uint32_t)shd->vk.ub_dset_size);
     uint8_t* dbuf_ptr = _sg_vk_shared_buffer_ptr(&_sg.vk.bind, dbuf_offset);
 
     // update descriptor buffer
-    for (size_t i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; i++) {
-        if (shd->cmn.uniform_blocks[i].stage == SG_SHADERSTAGE_NONE) {
-            continue;
-        }
-        _sg.vk.ext.get_descriptor(_sg.vk.dev,
-            &_sg.vk.uniform_bindinfos[i].get_info,
-            _sg.vk.descriptor_buffer_props.uniformBufferDescriptorSize,
-            dbuf_ptr + shd->vk.ub_dset_offsets[i]);
-    }
+    SOKOL_ASSERT(shd->vk.ub_dset_size <= _sg.vk.uniforms.dset_cache_size);
+    memcpy(dbuf_ptr, _sg.vk.uniforms.dset_cache, shd->vk.ub_dset_size);
 
     // record the descriptor buffer offset
     const VkPipelineBindPoint vk_bind_point = _sg.cur_pass.is_compute
@@ -20176,6 +20287,10 @@ _SOKOL_PRIVATE VkBlendFactor _sg_vk_blend_factor(sg_blend_factor f) {
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_COLOR:  return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
         case SG_BLENDFACTOR_BLEND_ALPHA:            return VK_BLEND_FACTOR_CONSTANT_ALPHA;
         case SG_BLENDFACTOR_ONE_MINUS_BLEND_ALPHA:  return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        case SG_BLENDFACTOR_SRC1_COLOR:             return VK_BLEND_FACTOR_SRC1_COLOR ;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_COLOR:   return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+        case SG_BLENDFACTOR_SRC1_ALPHA:             return VK_BLEND_FACTOR_SRC1_ALPHA;
+        case SG_BLENDFACTOR_ONE_MINUS_SRC1_ALPHA:   return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
         default:
             SOKOL_UNREACHABLE;
             return VK_BLEND_FACTOR_ONE;
@@ -20289,6 +20404,12 @@ _SOKOL_PRIVATE VkBorderColor _sg_vk_sampler_border_color(sg_border_color c) {
 
 _SOKOL_PRIVATE void _sg_vk_load_ext_funcs(void) {
     SOKOL_ASSERT(_sg.vk.dev);
+    #if defined(SOKOL_DEBUG)
+        _sg.vk.ext.set_debug_utils_object_name_ext = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(_sg.vk.instance, "vkSetDebugUtilsObjectNameEXT");
+        if (0 == _sg.vk.ext.set_debug_utils_object_name_ext) {
+            _SG_PANIC(VULKAN_REQUIRED_EXTENSION_FUNCTION_MISSING);
+        }
+    #endif
     _sg.vk.ext.get_descriptor_set_layout_size = (PFN_vkGetDescriptorSetLayoutSizeEXT)vkGetDeviceProcAddr(_sg.vk.dev, "vkGetDescriptorSetLayoutSizeEXT");
     if (0 == _sg.vk.ext.get_descriptor_set_layout_size) {
         _SG_PANIC(VULKAN_REQUIRED_EXTENSION_FUNCTION_MISSING);
@@ -20321,6 +20442,7 @@ _SOKOL_PRIVATE void _sg_vk_init_caps(void) {
     _sg.features.msaa_texture_bindings = true;
     _sg.features.draw_base_vertex = true;
     _sg.features.draw_base_instance = true;
+    _sg.features.dual_source_blending = true;
 
     SOKOL_ASSERT(_sg.vk.phys_dev);
     _sg.vk.descriptor_buffer_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
@@ -20517,7 +20639,7 @@ _SOKOL_PRIVATE void _sg_vk_acquire_frame_command_buffers(void) {
             _sg.cur_pass.valid = false;
             return;
         }
-        VkResult res = vkResetFences(_sg.vk.dev, 1, &_sg.vk.frame.slot[_sg.vk.frame_slot].fence);
+        res = vkResetFences(_sg.vk.dev, 1, &_sg.vk.frame.slot[_sg.vk.frame_slot].fence);
         SOKOL_ASSERT(res == VK_SUCCESS); _SOKOL_UNUSED(res);
 
         _sg_vk_delete_queue_collect();
@@ -20589,11 +20711,13 @@ _SOKOL_PRIVATE void _sg_vk_submit_frame_command_buffers(void) {
 
 _SOKOL_PRIVATE void _sg_vk_setup_backend(const sg_desc* desc) {
     SOKOL_ASSERT(desc);
+    SOKOL_ASSERT(desc->environment.vulkan.instance);
     SOKOL_ASSERT(desc->environment.vulkan.physical_device);
     SOKOL_ASSERT(desc->environment.vulkan.device);
     SOKOL_ASSERT(desc->environment.vulkan.queue);
     SOKOL_ASSERT(desc->uniform_buffer_size > 0);
     _sg.vk.valid = true;
+    _sg.vk.instance = (VkInstance) desc->environment.vulkan.instance;
     _sg.vk.phys_dev = (VkPhysicalDevice) desc->environment.vulkan.physical_device;
     _sg.vk.dev = (VkDevice) desc->environment.vulkan.device;
     _sg.vk.queue = (VkQueue) desc->environment.vulkan.queue;
@@ -20927,7 +21051,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_shader(_sg_shader_t* shd, const s
     VkResult res;
     _SG_STRUCT(VkDescriptorSetLayoutBinding, dsl_entries[_SG_VK_MAX_VIEW_SMP_DESCRIPTORSET_ENTRIES]);
     _SG_STRUCT(VkDescriptorSetLayoutCreateInfo, dsl_create_info);
-    size_t dsl_index = 0;
+    uint32_t dsl_index = 0;
     for (size_t i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; i++) {
         if (shd->cmn.uniform_blocks[i].stage == SG_SHADERSTAGE_NONE) {
             continue;
@@ -20952,6 +21076,10 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_shader(_sg_shader_t* shd, const s
 
     // store uniform descriptor set size and descriptor offsets
     _sg.vk.ext.get_descriptor_set_layout_size(_sg.vk.dev, shd->vk.ub_dsl, &shd->vk.ub_dset_size);
+    if (shd->vk.ub_dset_size > _sg.vk.uniforms.dset_cache_size) {
+        _SG_ERROR(VULKAN_SHADER_UNIFORM_DESCRIPTOR_SET_SIZE_VS_CACHE_SIZE);
+        return SG_RESOURCESTATE_FAILED;
+    }
     for (size_t i = 0; i < SG_MAX_UNIFORMBLOCK_BINDSLOTS; i++) {
         if (shd->cmn.uniform_blocks[i].stage == SG_SHADERSTAGE_NONE) {
             continue;
@@ -20959,7 +21087,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_shader(_sg_shader_t* shd, const s
         const uint8_t vk_bnd = shd->vk.ub_set0_bnd_n[i];
         VkDeviceSize dset_offset = 0;
         _sg.vk.ext.get_descriptor_set_layout_binding_offset(_sg.vk.dev, shd->vk.ub_dsl, vk_bnd, &dset_offset);
-        shd->vk.ub_dset_offsets[i] = dset_offset;
+        shd->vk.ub_dset_offsets[i] = (uint16_t)dset_offset;
     }
 
     _sg_clear(dsl_entries, sizeof(dsl_entries));
@@ -21020,7 +21148,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_shader(_sg_shader_t* shd, const s
         const uint8_t vk_bnd = shd->vk.view_set1_bnd_n[i];
         VkDeviceSize dset_offset = 0;
         _sg.vk.ext.get_descriptor_set_layout_binding_offset(_sg.vk.dev, shd->vk.view_smp_dsl, vk_bnd, &dset_offset);
-        shd->vk.view_dset_offsets[i] = dset_offset;
+        shd->vk.view_dset_offsets[i] = (uint16_t)dset_offset;
     }
     for (size_t i = 0; i < SG_MAX_SAMPLER_BINDSLOTS; i++) {
         if (shd->cmn.samplers[i].stage == SG_SHADERSTAGE_NONE) {
@@ -21029,7 +21157,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_shader(_sg_shader_t* shd, const s
         const uint8_t vk_bnd = shd->vk.smp_set1_bnd_n[i];
         VkDeviceSize dset_offset = 0;
         _sg.vk.ext.get_descriptor_set_layout_binding_offset(_sg.vk.dev, shd->vk.view_smp_dsl, vk_bnd, &dset_offset);
-        shd->vk.smp_dset_offsets[i] = dset_offset;
+        shd->vk.smp_dset_offsets[i] = (uint16_t)dset_offset;
     }
 
     VkDescriptorSetLayout set_layouts[_SG_VK_NUM_DESCRIPTORSETS] = {
@@ -21517,7 +21645,7 @@ _SOKOL_PRIVATE void _sg_vk_begin_render_pass(VkCommandBuffer cmd_buf, const sg_p
     vkCmdBeginRendering(cmd_buf, &render_info);
 
     _SG_STRUCT(VkViewport, vp);
-    vp.y = _sg.cur_pass.dim.height;
+    vp.y = (float)_sg.cur_pass.dim.height;
     vp.width = (float)_sg.cur_pass.dim.width;
     vp.height = (float)-_sg.cur_pass.dim.height;
     vp.maxDepth = 1.0f;
@@ -21563,7 +21691,7 @@ _SOKOL_PRIVATE void _sg_vk_apply_pipeline(_sg_pipeline_t* pip) {
     SOKOL_ASSERT(pip);
     SOKOL_ASSERT(pip->vk.pip);
     SOKOL_ASSERT(_sg.vk.frame.cmd_buf);
-    _sg.vk.uniforms_dirty = false;
+    _sg.vk.uniforms.dirty = false;
     VkPipelineBindPoint bindpoint = pip->cmn.is_compute
         ? VK_PIPELINE_BIND_POINT_COMPUTE
         : VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -21584,7 +21712,7 @@ _SOKOL_PRIVATE bool _sg_vk_apply_bindings(_sg_bindings_ptrs_t* bnd) {
         // FIXME: could do this in a single call if buffer bindings are guaranteed
         // to be continuous (currently that's not checked anywhere), or alternative
         // via nullDescriptor robustness feature (which apparently may have performance downsides)
-        for (size_t i = 0; i < SG_MAX_VERTEXBUFFER_BINDSLOTS; i++) {
+        for (uint32_t i = 0; i < SG_MAX_VERTEXBUFFER_BINDSLOTS; i++) {
             if (bnd->vbs[i]) {
                 VkBuffer vk_buf = bnd->vbs[i]->vk.buf;
                 VkDeviceSize vk_offset = (VkDeviceSize)bnd->vb_offsets[i];
@@ -21607,26 +21735,40 @@ _SOKOL_PRIVATE bool _sg_vk_apply_bindings(_sg_bindings_ptrs_t* bnd) {
 }
 
 _SOKOL_PRIVATE void _sg_vk_apply_uniforms(int ub_slot, const sg_range* data) {
-    SOKOL_ASSERT(_sg.vk.uniform.cur_dev_addr);
+    SOKOL_ASSERT(_sg.vk.uniforms.dbuf.cur_dev_addr);
     SOKOL_ASSERT(data && data->ptr && (data->size > 0));
     SOKOL_ASSERT((ub_slot >= 0) && (ub_slot < SG_MAX_UNIFORMBLOCK_BINDSLOTS));
+    const _sg_pipeline_t* pip = _sg_pipeline_ref_ptr(&_sg.cur_pip);
+    const _sg_shader_t* shd = _sg_shader_ref_ptr(&pip->cmn.shader);
+    SOKOL_ASSERT(data->size == shd->cmn.uniform_blocks[ub_slot].size);
 
     // copy data into uniform buffer and keep track of uniform bind infos
     const VkDeviceSize ubuf_offset = _sg_vk_uniform_copy(data);
-    if (_sg.vk.uniform.overflown) {
+    if (_sg.vk.uniforms.dbuf.overflown) {
         _SG_ERROR(VULKAN_UNIFORM_BUFFER_OVERFLOW);
         _sg.next_draw_valid = false;
         return;
     }
-    _sg.vk.uniform_bindinfos[ub_slot].addr_info.range = data->size;
-    _sg.vk.uniform_bindinfos[ub_slot].addr_info.address = _sg.vk.uniform.cur_dev_addr + ubuf_offset;
-    _sg.vk.uniforms_dirty = true;
+    _sg.vk.uniforms.addr_info[ub_slot].range = data->size;
+    _sg.vk.uniforms.addr_info[ub_slot].address = _sg.vk.uniforms.dbuf.cur_dev_addr + ubuf_offset;
+
+    // copy uniform buffer descriptor data into intermediate sysmem buffer
+    // NOTE: letting vkGetDescriptorEXT write directly into the descriptor
+    // buffer has catastrophic performance on some Vulkan drivers, notably
+    // Intel's Windows driver
+    const size_t dsize = _sg.vk.descriptor_buffer_props.uniformBufferDescriptorSize;
+    SOKOL_ASSERT((shd->vk.ub_dset_offsets[ub_slot] + dsize) <= _sg.vk.uniforms.dset_cache_size);
+    uint8_t* dst_ptr = _sg.vk.uniforms.dset_cache + shd->vk.ub_dset_offsets[ub_slot];
+    _sg.vk.ext.get_descriptor(_sg.vk.dev, &_sg.vk.uniforms.get_info[ub_slot], dsize, dst_ptr);
+
+    // set uniforms dirty, applying the descriptor buffer offset is happens in draw/dispatch
+    _sg.vk.uniforms.dirty = true;
 }
 
 _SOKOL_PRIVATE void _sg_vk_draw(int base_element, int num_elements, int num_instances, int base_vertex, int base_instance) {
     SOKOL_ASSERT(_sg.vk.frame.cmd_buf);
     VkCommandBuffer cmd_buf = _sg.vk.frame.cmd_buf;
-    if (_sg.vk.uniforms_dirty) {
+    if (_sg.vk.uniforms.dirty) {
         if (!_sg_vk_bind_uniform_descriptor_set(cmd_buf)) {
             return;
         }
@@ -21650,7 +21792,7 @@ _SOKOL_PRIVATE void _sg_vk_draw(int base_element, int num_elements, int num_inst
 _SOKOL_PRIVATE void _sg_vk_dispatch(int num_groups_x, int num_groups_y, int num_groups_z) {
     SOKOL_ASSERT(_sg.vk.frame.cmd_buf);
     VkCommandBuffer cmd_buf = _sg.vk.frame.cmd_buf;
-    if (_sg.vk.uniforms_dirty) {
+    if (_sg.vk.uniforms.dirty) {
         if (!_sg_vk_bind_uniform_descriptor_set(cmd_buf)) {
             return;
         }
@@ -22834,6 +22976,14 @@ _SOKOL_PRIVATE bool _sg_validate_pipeline_desc(const sg_pipeline_desc* desc) {
             }
             if ((bs->op_alpha == SG_BLENDOP_MIN) || (bs->op_alpha == SG_BLENDOP_MAX)) {
                 _SG_VALIDATE((bs->src_factor_alpha == SG_BLENDFACTOR_ONE) && (bs->dst_factor_alpha == SG_BLENDFACTOR_ONE), VALIDATE_PIPELINEDESC_BLENDOP_MINMAX_REQUIRES_BLENDFACTOR_ONE);
+            }
+            const bool needs_dualsource_blending =
+                _sg_is_dualsource_blendfactor(bs->src_factor_rgb) ||
+                _sg_is_dualsource_blendfactor(bs->dst_factor_rgb) ||
+                _sg_is_dualsource_blendfactor(bs->src_factor_alpha) ||
+                _sg_is_dualsource_blendfactor(bs->dst_factor_alpha);
+            if (needs_dualsource_blending) {
+                _SG_VALIDATE(_sg.features.dual_source_blending, VALIDATE_PIPELINEDESC_DUAL_SOURCE_BLENDING_NOT_SUPPORTED);
             }
         }
         return _sg_validate_end();
@@ -26183,6 +26333,18 @@ SOKOL_API_IMPL const void* sg_mtl_compute_command_encoder(void) {
     #if defined(SOKOL_METAL)
         if (nil != _sg.mtl.compute_cmd_encoder) {
             return (__bridge const void*) _sg.mtl.compute_cmd_encoder;
+        } else {
+            return 0;
+        }
+    #else
+        return 0;
+    #endif
+}
+
+SOKOL_API_IMPL const void* sg_mtl_command_queue(void) {
+    #if defined(SOKOL_METAL)
+        if (nil != _sg.mtl.cmd_queue) {
+            return (__bridge const void*) _sg.mtl.cmd_queue;
         } else {
             return 0;
         }
