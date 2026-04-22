@@ -230,24 +230,21 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
     if (isPlatform(mod_target, .darwin)) {
         try cflags.appendBounded("-ObjC");
         if (link_system_libs) {
-            mod.linkFramework("Foundation", .{});
+            mod.linkFramework("QuartzCore", .{});
             mod.linkFramework("AudioToolbox", .{});
             if (.metal == backend) {
                 mod.linkFramework("Metal", .{});
             }
             if (mod_target.os.tag == .ios) {
+                mod.linkFramework("Foundation", .{});
                 mod.linkFramework("UIKit", .{});
                 mod.linkFramework("AVFoundation", .{});
                 if (.gl == backend) {
                     mod.linkFramework("OpenGLES", .{});
                     mod.linkFramework("GLKit", .{});
                 }
-                if (.metal == backend) {
-                    mod.linkFramework("MetalKit", .{});
-                }
             } else if (mod_target.os.tag == .macos) {
-                mod.linkFramework("Cocoa", .{});
-                mod.linkFramework("QuartzCore", .{});
+                mod.linkFramework("AppKit", .{});
                 if (.gl == backend) {
                     mod.linkFramework("OpenGL", .{});
                 }
@@ -330,6 +327,10 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
         if (options.with_tracing) {
             mod.addCSourceFile(.{
                 .file = b.path(csrc_root ++ "sokol_gfx_imgui.c"),
+                .flags = cflags.items,
+            });
+            mod.addCSourceFile(.{
+                .file = b.path(csrc_root ++ "sokol_app_imgui.c"),
                 .flags = cflags.items,
             });
         }
@@ -479,12 +480,7 @@ fn createEmsdkStep(b: *Build, emsdk: *Build.Dependency) *Build.Step.Run {
 }
 
 fn fileExists(b: *Build, path: []const u8) !bool {
-    // FIXME: drop support for 0.15.x
-    if (builtin.zig_version.minor > 15) {
-        return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
-    } else {
-        return !std.meta.isError(std.fs.cwd().access(path, .{}));
-    }
+    return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
 }
 
 // One-time setup of the Emscripten SDK (runs 'emsdk install + activate'). If the
@@ -583,7 +579,7 @@ fn buildExample(b: *Build, example: Example, examples_step: *Build.Step, options
             .use_webgpu = backend == .wgpu,
             .use_webgl2 = backend != .wgpu,
             .use_emmalloc = true,
-            .use_filesystem = false,
+            .use_filesystem = true,
             .shell_file_path = b.path("src/sokol/web/shell.html"),
             .extra_args = &.{"-sSTACK_SIZE=512KB"},
         });

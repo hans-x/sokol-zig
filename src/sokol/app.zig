@@ -65,7 +65,7 @@
 // Link with the following system libraries:
 //
 // - on macOS:
-//     - all backends: Foundation, Cocoa, QuartzCore
+//     - all backends: AppKit, QuartzCore
 //     - with SOKOL_METAL: Metal
 //     - with SOKOL_GLCORE: OpenGL
 //     - with SOKOL_WGPU: a WebGPU implementation library (tested with webgpu_dawn)
@@ -286,8 +286,11 @@
 //         in more strongly typed languages than C and C++.
 //
 //     double sapp_frame_duration(void)
-//         Returns the frame duration in seconds averaged over a number of
-//         frames to smooth out any jittering spikes.
+//         Returns a smoothed frame duration.
+//
+//     double sapp_frame_duration_unfiltered(void)
+//         Returns the unfiltered frame duration with varying degree of
+//         jitter (depending on platform and backend).
 //
 //     int sapp_color_format(void)
 //     int sapp_depth_format(void)
@@ -2268,6 +2271,14 @@ extern fn sapp_frame_duration() f64;
 /// get an averaged/smoothed frame duration in seconds
 pub fn frameDuration() f64 {
     return sapp_frame_duration();
+}
+
+/// get 'raw' unfiltered frame duration in seconds
+extern fn sapp_frame_duration_unfiltered() f64;
+
+/// get 'raw' unfiltered frame duration in seconds
+pub fn frameDurationUnfiltered() f64 {
+    return sapp_frame_duration_unfiltered();
 }
 
 /// write string into clipboard

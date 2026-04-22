@@ -1,17 +1,40 @@
 [![build](https://github.com/floooh/sokol-zig/actions/workflows/main.yml/badge.svg)](https://github.com/floooh/sokol-zig/actions/workflows/main.yml)
 
-For Zig version 0.15+
+For Zig version 0.16+
 
 In case of breaking changes in Zig, the bindings might fall behind. Please don't hesitate to
 ping me via a Github issue, or even better, provide a PR :)
-
-Support for stable Zig versions is in branches (e.g. `zig-0.12.0`), those versions are 'frozen in time' though.
 
 Related projects:
 
 - [pacman.zig](https://github.com/floooh/pacman.zig)
 - [chipz emulators](https://github.com/floooh/chipz)
 - [Dear ImGui sample project](https://github.com/floooh/sokol-zig-imgui-sample)
+
+## Build Prerequisites
+
+On Linux you'll need to install a couple of dev-packages. For instance with Ubuntu:
+
+```
+sudo apt install xorg-dev libasound-dev
+```
+
+Additionally when using EGL instead of GLX:
+```
+sudo apt install libegl-dev`
+```
+Additionally when using the experimental Vulkan backend:
+```
+sudo apt install libvulkan-dev vulkan-tools vulkan-validationlayers
+```
+
+All other platforms should build 'out of the box'.
+
+> [!NOTE]
+> even though the experimental Vulkan backend now also supports Windows,
+> the `build.zig` has not been prepared yet. If you still want to tinker with
+> this you'll need to install the Vulkan SDK (https://vulkan.lunarg.com/sdk/home)
+> and use the `VULKAN_SDK` env variable to find the vulkan header and library stubs.
 
 ## Building the samples
 
