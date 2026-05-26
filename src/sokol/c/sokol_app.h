@@ -10222,12 +10222,14 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
         return false;
     }
     if (AKeyEvent_getKeyCode(e) == AKEYCODE_BACK) {
-        /* FIXME: this should be hooked into a "really quit?" mechanism
-           so the app can ask the user for confirmation, this is currently
-           generally missing in sokol_app.h
-        */
-        _sapp_android_shutdown();
-        return true;
+        const int32_t action = AKeyEvent_getAction(e);
+        if (action == AKEY_EVENT_ACTION_DOWN || action == AKEY_EVENT_ACTION_UP) {
+            _sapp_init_event(action == AKEY_EVENT_ACTION_DOWN ? SAPP_EVENTTYPE_KEY_DOWN : SAPP_EVENTTYPE_KEY_UP);
+            _sapp.event.key_code = SAPP_KEYCODE_ESCAPE;
+            _sapp.event.key_repeat = AKeyEvent_getRepeatCount(e) > 0;
+            _sapp_call_event(&_sapp.event);
+            return true;
+        }
     }
     return false;
 }
@@ -13930,7 +13932,11 @@ SOKOL_API_IMPL void sapp_cancel_quit(void) {
 }
 
 SOKOL_API_IMPL void sapp_quit(void) {
+    #if defined(_SAPP_ANDROID)
+    _sapp_android_shutdown();
+    #else
     _sapp.quit_ordered = true;
+    #endif
 }
 
 SOKOL_API_IMPL void sapp_consume_event(void) {
