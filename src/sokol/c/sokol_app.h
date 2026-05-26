@@ -10149,8 +10149,11 @@ _SOKOL_PRIVATE void _sapp_android_cleanup(void) {
 _SOKOL_PRIVATE void _sapp_android_shutdown(void) {
     /* try to cleanup while we still have a surface and can call cleanup_cb() */
     _sapp_android_cleanup();
-    /* request exit */
+    /* Let Android start the Activity transition, then exit before a relaunch can
+       reuse the half-destroyed global _sapp state in this process. */
     ANativeActivity_finish(_sapp.android.activity);
+    usleep(200 * 1000);
+    exit(0);
 }
 
 _SOKOL_PRIVATE void _sapp_android_frame(void) {
@@ -10223,11 +10226,14 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
     }
     if (AKeyEvent_getKeyCode(e) == AKEYCODE_BACK) {
         const int32_t action = AKeyEvent_getAction(e);
-        if (action == AKEY_EVENT_ACTION_DOWN || action == AKEY_EVENT_ACTION_UP) {
-            _sapp_init_event(action == AKEY_EVENT_ACTION_DOWN ? SAPP_EVENTTYPE_KEY_DOWN : SAPP_EVENTTYPE_KEY_UP);
+        if (action == AKEY_EVENT_ACTION_DOWN) {
+            _sapp_init_event(SAPP_EVENTTYPE_KEY_DOWN);
             _sapp.event.key_code = SAPP_KEYCODE_ESCAPE;
             _sapp.event.key_repeat = AKeyEvent_getRepeatCount(e) > 0;
             _sapp_call_event(&_sapp.event);
+            return true;
+        }
+        if (action == AKEY_EVENT_ACTION_UP) {
             return true;
         }
     }
@@ -10387,12 +10393,15 @@ _SOKOL_PRIVATE void* _sapp_android_loop(void* arg) {
         if (_sapp_android_should_update()) {
             _sapp_android_frame();
         }
-
         /* process all events (or stop early if app is requested to quit) */
         bool process_events = true;
-        while (process_events && !_sapp.android.is_thread_stopping) {
+        while (process_events && !_sapp.android.is_thread_stopping && !_sapp.quit_ordered) {
             bool block_until_event = !_sapp.android.is_thread_stopping && !_sapp_android_should_update();
             process_events = ALooper_pollOnce(block_until_event ? -1 : 0, NULL, NULL, NULL) == ALOOPER_POLL_CALLBACK;
+        }
+        if (_sapp.quit_ordered) {
+            _sapp_android_shutdown();
+            _sapp.android.is_thread_stopping = true;
         }
     }
 
@@ -10538,13 +10547,8 @@ _SOKOL_PRIVATE void _sapp_android_on_destroy(ANativeActivity* activity) {
     }
     pthread_mutex_unlock(&_sapp.android.pt.mutex);
 
-    /* clean up main thread */
-    pthread_cond_destroy(&_sapp.android.pt.cond);
-    pthread_mutex_destroy(&_sapp.android.pt.mutex);
-
-    close(_sapp.android.pt.read_from_main_fd);
-    close(_sapp.android.pt.write_from_main_fd);
-
+    /* Do not destroy synchronization primitives here; Android may still deliver
+       callbacks before exit() finishes the process. */
     _SAPP_INFO(ANDROID_NATIVE_ACTIVITY_DONE);
 
     /* this is a bit naughty, but causes a clean restart of the app (static globals are reset) */
@@ -13932,11 +13936,7 @@ SOKOL_API_IMPL void sapp_cancel_quit(void) {
 }
 
 SOKOL_API_IMPL void sapp_quit(void) {
-    #if defined(_SAPP_ANDROID)
-    _sapp_android_shutdown();
-    #else
     _sapp.quit_ordered = true;
-    #endif
 }
 
 SOKOL_API_IMPL void sapp_consume_event(void) {
