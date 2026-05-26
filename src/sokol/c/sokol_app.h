@@ -2509,6 +2509,7 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
     #include <GLES3/gl3.h>
 #elif defined(_SAPP_LINUX)
     #define GL_GLEXT_PROTOTYPES
+    #include <locale.h>
     #include <X11/Xlib.h>
     #include <X11/Xutil.h>
     #include <X11/XKBlib.h>
@@ -3167,6 +3168,9 @@ typedef struct {
     Window root;
     Colormap colormap;
     Window window;
+    XIM im;
+    XIC ic;
+    bool im_composing;
     Cursor hidden_cursor;
     Cursor standard_cursors[_SAPP_MOUSECURSOR_NUM];
     Cursor custom_cursors[_SAPP_MOUSECURSOR_NUM];
@@ -12929,9 +12933,101 @@ _SOKOL_PRIVATE void _sapp_x11_on_genericevent(XEvent* event) {
     }
 }
 
+_SOKOL_PRIVATE void _sapp_x11_init_input_method(void) {
+    setlocale(LC_CTYPE, "");
+    if (!XSupportsLocale()) {
+        return;
+    }
+    XSetLocaleModifiers("");
+    _sapp.x11.im = XOpenIM(_sapp.x11.display, NULL, NULL, NULL);
+    if (!_sapp.x11.im) {
+        return;
+    }
+    _sapp.x11.ic = XCreateIC(_sapp.x11.im,
+        XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+        XNClientWindow, _sapp.x11.window,
+        XNFocusWindow, _sapp.x11.window,
+        NULL);
+    if (!_sapp.x11.ic) {
+        XCloseIM(_sapp.x11.im);
+        _sapp.x11.im = NULL;
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_x11_discard_input_method(void) {
+    if (_sapp.x11.ic) {
+        XDestroyIC(_sapp.x11.ic);
+        _sapp.x11.ic = NULL;
+    }
+    if (_sapp.x11.im) {
+        XCloseIM(_sapp.x11.im);
+        _sapp.x11.im = NULL;
+    }
+}
+
+_SOKOL_PRIVATE bool _sapp_x11_is_text_codepoint(uint32_t chr) {
+    if (chr < 0x20) {
+        return false;
+    }
+    if ((chr >= 0x7F) && (chr <= 0x9F)) {
+        return false;
+    }
+    if ((chr >= 0xD800) && (chr <= 0xDFFF)) {
+        return false;
+    }
+    if (chr == 0xFFFD) {
+        return false;
+    }
+    if (chr > 0x10FFFF) {
+        return false;
+    }
+    return true;
+}
+
+_SOKOL_PRIVATE void _sapp_x11_utf8_text_event(const char* text, int len, bool repeat, uint32_t mods) {
+    int i = 0;
+    while (i < len) {
+        const unsigned char c0 = (unsigned char)text[i];
+        uint32_t chr = 0;
+        int n = 0;
+        if (c0 < 0x80) {
+            chr = c0;
+            n = 1;
+        } else if ((c0 & 0xE0) == 0xC0 && (i + 1) < len) {
+            const unsigned char c1 = (unsigned char)text[i + 1];
+            if ((c1 & 0xC0) != 0x80) { i++; continue; }
+            chr = ((uint32_t)(c0 & 0x1F) << 6) | (uint32_t)(c1 & 0x3F);
+            n = 2;
+        } else if ((c0 & 0xF0) == 0xE0 && (i + 2) < len) {
+            const unsigned char c1 = (unsigned char)text[i + 1];
+            const unsigned char c2 = (unsigned char)text[i + 2];
+            if (((c1 & 0xC0) != 0x80) || ((c2 & 0xC0) != 0x80)) { i++; continue; }
+            chr = ((uint32_t)(c0 & 0x0F) << 12) | ((uint32_t)(c1 & 0x3F) << 6) | (uint32_t)(c2 & 0x3F);
+            n = 3;
+        } else if ((c0 & 0xF8) == 0xF0 && (i + 3) < len) {
+            const unsigned char c1 = (unsigned char)text[i + 1];
+            const unsigned char c2 = (unsigned char)text[i + 2];
+            const unsigned char c3 = (unsigned char)text[i + 3];
+            if (((c1 & 0xC0) != 0x80) || ((c2 & 0xC0) != 0x80) || ((c3 & 0xC0) != 0x80)) { i++; continue; }
+            chr = ((uint32_t)(c0 & 0x07) << 18) | ((uint32_t)(c1 & 0x3F) << 12) | ((uint32_t)(c2 & 0x3F) << 6) | (uint32_t)(c3 & 0x3F);
+            n = 4;
+        } else {
+            i++;
+            continue;
+        }
+        if (_sapp_x11_is_text_codepoint(chr)) {
+            _sapp_x11_char_event(chr, repeat, mods);
+        }
+        i += n;
+    }
+}
+
 _SOKOL_PRIVATE void _sapp_x11_on_focusin(XEvent* event) {
     // NOTE: ignoring NotifyGrab and NotifyUngrab is same behaviour as GLFW
     if ((event->xfocus.mode != NotifyGrab) && (event->xfocus.mode != NotifyUngrab)) {
+        if (_sapp.x11.ic) {
+            XSetICFocus(_sapp.x11.ic);
+        }
         _sapp_x11_app_event(SAPP_EVENTTYPE_FOCUSED);
     }
 }
@@ -12943,6 +13039,9 @@ _SOKOL_PRIVATE void _sapp_x11_on_focusout(XEvent* event) {
     }
     // NOTE: ignoring NotifyGrab and NotifyUngrab is same behaviour as GLFW
     if ((event->xfocus.mode != NotifyGrab) && (event->xfocus.mode != NotifyUngrab)) {
+        if (_sapp.x11.ic) {
+            XUnsetICFocus(_sapp.x11.ic);
+        }
         _sapp_x11_app_event(SAPP_EVENTTYPE_UNFOCUSED);
     }
 }
@@ -12955,14 +13054,46 @@ _SOKOL_PRIVATE void _sapp_x11_on_keypress(XEvent* event) {
     uint32_t mods = _sapp_x11_mods(event->xkey.state);
     // X11 doesn't set modifier bit on key down, so emulate that
     mods |= _sapp_x11_key_modifier_bit(key);
+    if (_sapp.x11.ic) {
+        if (key == SAPP_KEYCODE_BACKSPACE) {
+            if (_sapp.x11.im_composing && XFilterEvent(event, None)) {
+                return;
+            }
+            _sapp.x11.im_composing = false;
+        } else if (XFilterEvent(event, None)) {
+            _sapp.x11.im_composing = true;
+            return;
+        }
+    }
     if (key != SAPP_KEYCODE_INVALID) {
         _sapp_x11_key_event(SAPP_EVENTTYPE_KEY_DOWN, key, repeat, mods);
     }
-    KeySym keysym;
-    XLookupString(&event->xkey, NULL, 0, &keysym, NULL);
-    int32_t chr = _sapp_x11_keysym_to_unicode(keysym);
-    if (chr > 0) {
-        _sapp_x11_char_event((uint32_t)chr, repeat, mods);
+    if (_sapp.x11.ic) {
+        KeySym keysym = NoSymbol;
+        Status status = 0;
+        char stack_buf[64];
+        int len = Xutf8LookupString(_sapp.x11.ic, &event->xkey, stack_buf, (int)sizeof(stack_buf), &keysym, &status);
+        if (status == XBufferOverflow && len > 0) {
+            char* heap_buf = (char*)malloc((size_t)len + 1);
+            if (heap_buf) {
+                len = Xutf8LookupString(_sapp.x11.ic, &event->xkey, heap_buf, len, &keysym, &status);
+                if ((status == XLookupChars || status == XLookupBoth) && len > 0) {
+                    _sapp.x11.im_composing = false;
+                    _sapp_x11_utf8_text_event(heap_buf, len, repeat, mods);
+                }
+                free(heap_buf);
+            }
+        } else if ((status == XLookupChars || status == XLookupBoth) && len > 0) {
+            _sapp.x11.im_composing = false;
+            _sapp_x11_utf8_text_event(stack_buf, len, repeat, mods);
+        }
+    } else {
+        KeySym keysym;
+        XLookupString(&event->xkey, NULL, 0, &keysym, NULL);
+        int32_t chr = _sapp_x11_keysym_to_unicode(keysym);
+        if ((chr > 0) && _sapp_x11_is_text_codepoint((uint32_t)chr)) {
+            _sapp_x11_char_event((uint32_t)chr, repeat, mods);
+        }
     }
 }
 
@@ -13454,6 +13585,7 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
         _sapp_x11_create_window(0, 0);
         _sapp_vk_init();
     #endif
+    _sapp_x11_init_input_method();
     sapp_set_icon(&desc->icon);
     _sapp.valid = true;
     _sapp_x11_show_window();
@@ -13492,6 +13624,7 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
     #elif defined(SOKOL_VULKAN)
         _sapp_vk_discard();
     #endif
+    _sapp_x11_discard_input_method();
     _sapp_x11_destroy_window();
     _sapp_x11_destroy_standard_cursors();
     XCloseDisplay(_sapp.x11.display);
