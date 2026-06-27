@@ -10557,15 +10557,11 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
     }
     if (AKeyEvent_getKeyCode(e) == AKEYCODE_BACK) {
         const int32_t action = AKeyEvent_getAction(e);
-        if (action == AKEY_EVENT_ACTION_DOWN) {
-            _sapp_init_event(SAPP_EVENTTYPE_KEY_DOWN);
+        if (action == AKEY_EVENT_ACTION_DOWN || action == AKEY_EVENT_ACTION_UP) {
+            _sapp_init_event(action == AKEY_EVENT_ACTION_DOWN ? SAPP_EVENTTYPE_KEY_DOWN : SAPP_EVENTTYPE_KEY_UP);
             _sapp.event.key_code = SAPP_KEYCODE_ESCAPE;
             _sapp.event.key_repeat = AKeyEvent_getRepeatCount(e) > 0;
-            _sapp_call_event(&_sapp.event);
-            return true;
-        }
-        if (action == AKEY_EVENT_ACTION_UP) {
-            return true;
+            return _sapp_call_event(&_sapp.event);
         }
     }
     return false;
