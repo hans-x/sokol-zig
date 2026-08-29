@@ -28,6 +28,7 @@ const examples = [_]Example{
     .{ .name = "shapes", .has_shader = true },
     .{ .name = "vertexpull", .has_shader = true, .needs_compute = true },
     .{ .name = "instancing-compute", .has_shader = true, .needs_compute = true },
+    .{ .name = "framebuffer" },
 };
 
 pub const SokolBackend = enum {
@@ -161,6 +162,7 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
         "sokol_shape.c",
         "sokol_glue.c",
         "sokol_fetch.c",
+        "sokol_framebuffer.c",
     };
     const mod = b.addModule("mod_sokol_clib", .{
         .target = options.target,
@@ -207,7 +209,7 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
     if (options.with_tracing) {
         try cflags.appendBounded("-DSOKOL_TRACE_HOOKS");
     }
-    if (options.optimize != .Debug) {
+    if (!isOptimizeModeDebug(options.optimize)) {
         try cflags.appendBounded("-DNDEBUG");
     }
     switch (backend) {
@@ -341,12 +343,28 @@ pub fn buildLibSokol(b: *Build, options: LibSokolOptions) !*Build.Step.Compile {
     return lib;
 }
 
-// Zig 0.16.0 vs 0.17.0 compatibility helper
+// Zig 0.16.0 vs 0.17.0 compatibility helpers
 fn addRunFile(b: *Build, p: Build.LazyPath) *Build.Step.Run {
     if (builtin.zig_version.minor <= 16) {
         return b.addSystemCommand(&.{p.getPath(b)});
     } else {
         return b.addRunFile(p);
+    }
+}
+
+fn isOptimizeModeSmall(opt: OptimizeMode) bool {
+    if (builtin.zig_version.minor <= 16) {
+        return opt == .ReleaseSmall;
+    } else {
+        return opt == .small;
+    }
+}
+
+fn isOptimizeModeDebug(opt: OptimizeMode) bool {
+    if (builtin.zig_version.minor <= 16) {
+        return opt == .Debug;
+    } else {
+        return opt == .debug;
     }
 }
 
@@ -366,17 +384,19 @@ pub const EmLinkOptions = struct {
     use_emmalloc: bool = false,
     use_filesystem: bool = true,
     shell_file_path: ?Build.LazyPath,
-    extra_args: []const []const u8 = &.{},
+    js_libraries: []const Build.LazyPath = &.{}, // input files via '--js-library [file]'
+    pre_js: []const Build.LazyPath = &.{}, // input files via '--pre-js [file]''
+    extra_args: []const []const u8 = &.{}, // general extra cmdline arguments
 };
 pub fn emLinkStep(b: *Build, options: EmLinkOptions) !*Build.Step.InstallDir {
     const emcc_path = emTool(b, options.emsdk, "emcc");
     const emcc = addRunFile(b, emcc_path);
     emcc.setName("emcc"); // hide emcc path
-    if (options.optimize == .Debug) {
+    if (isOptimizeModeDebug(options.optimize)) {
         emcc.addArgs(&.{ "-g", "-Og", "-sSAFE_HEAP=1", "-sSTACK_OVERFLOW_CHECK=1" });
     } else {
         emcc.addArg("-sASSERTIONS=0");
-        if (options.optimize == .ReleaseSmall) {
+        if (isOptimizeModeSmall(options.optimize)) {
             emcc.addArg("-Oz");
         } else {
             emcc.addArg("-O3");
@@ -402,6 +422,14 @@ pub fn emLinkStep(b: *Build, options: EmLinkOptions) !*Build.Step.InstallDir {
     }
     if (options.shell_file_path) |shell_file_path| {
         emcc.addPrefixedFileArg("--shell-file=", shell_file_path);
+    }
+    for (options.js_libraries) |js_library| {
+        emcc.addArg("--js-library");
+        emcc.addFileArg(js_library);
+    }
+    for (options.pre_js) |pre_js| {
+        emcc.addArg("--pre-js");
+        emcc.addFileArg(pre_js);
     }
     for (options.extra_args) |arg| {
         emcc.addArg(arg);
@@ -485,14 +513,9 @@ fn createEmsdkStep(b: *Build, emsdk: *Build.Dependency) *Build.Step.Run {
     }
 }
 
-// One-time setup of the Emscripten SDK (runs 'emsdk install + activate'). If the
-// SDK had to be setup, a run step will be returned which should be added
-// as dependency to the sokol library (since this needs the emsdk in place),
-// if the emsdk was already setup, null will be returned.
-// NOTE: ideally this would go into a separate emsdk-zig package
-// NOTE 2: this code works just fine when the SDK version is updated in build.zig.zon
-// since this will be cloned into a new zig cache directory which doesn't have
-// an .emscripten file yet until the one-time setup.
+// helper function for creating a build step to install the Emscripten SDK
+// into zig-pkg, this is wired up to an `install-emsdk` step
+// (e.g. run `zig build install-emsdk)
 pub const EmSdkInstallOptions = struct {
     version: []const u8 = "latest",
 };
