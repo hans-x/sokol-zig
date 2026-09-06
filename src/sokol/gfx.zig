@@ -303,13 +303,37 @@
 //     resource from unsealed into valid state. For more details see the
 //     doc section `ON POPULATING IMMUTABLE RESOURCES` below.
 //
-// --- to update (overwrite) the content of buffer and image resources, call:
+// --- to update the content of buffer and image resources:
+//
+//     For data that's written by the CPU and consumed by the GPU in the
+//     *same frame* and doesn't need to survive into the next frame, call:
+//
+//         sg_write_buffer_transient(const sg_write_buffer_desc* desc);
+//         sg_write_image_transient(const sg_write_image_desc* desc);
+//
+//     The buffer and image objects which are the destination of
+//     write-transient calls must have been created with
+//     `.usage.write_transient = true` and cannot be pass attachments.
+//
+//     Multiple calls to the write-transient functions are allowed in a frame
+//     to incrementally populate the resource, but only until the resource is bound.
+//     After a resource has been used in a frame it cannot be written to until
+//     the next frame.
+//
+//     Expect that data written with the write-transient functions will not
+//     survive into the next frame, e.g. all data written by the CPU is expected
+//     to be 'consumed' by the GPU in the same frame. Trying to bind a write-transient
+//     buffer or image that hasn't been written to in the same frame is a validation
+//     layer error. Calling a write-transient function on a resource that isn't
+//     used for rendering in the same frame is allowed but pointless.
+//
+//     For data that needs to persist across frames, call:
 //
 //         sg_update_buffer(sg_buffer buf, const sg_range* data)
 //         sg_update_image(sg_image img, const sg_image_data* data)
 //
 //     Buffers and images to be updated must have been created with
-//     sg_buffer_desc.usage.dynamic_update or .stream_update.
+//     sg_buffer_desc.usage.dynamic_update.
 //
 //     Only one update per frame is allowed for buffer and image resources when
 //     using the sg_update_*() functions. The rationale is to have a simple
@@ -320,60 +344,8 @@
 //     operation only references the valid (updated) data in the
 //     buffer or image.
 //
-// --- to append a chunk of data to a buffer resource, call:
-//
-//         int sg_append_buffer(sg_buffer buf, const sg_range* data)
-//
-//     The difference to sg_update_buffer() is that sg_append_buffer()
-//     can be called multiple times per frame to append new data to the
-//     buffer piece by piece, optionally interleaved with draw calls referencing
-//     the previously written data.
-//
-//     sg_append_buffer() returns a byte offset to the start of the
-//     written data, this offset can be assigned to
-//     sg_bindings.vertex_buffer_offsets[n] or
-//     sg_bindings.index_buffer_offset
-//
-//     Code example:
-//
-//     for (...) {
-//         const void* data = ...;
-//         const int num_bytes = ...;
-//         int offset = sg_append_buffer(buf, &(sg_range) { .ptr=data, .size=num_bytes });
-//         bindings.vertex_buffer_offsets[0] = offset;
-//         sg_apply_pipeline(pip);
-//         sg_apply_bindings(&bindings);
-//         sg_apply_uniforms(...);
-//         sg_draw(...);
-//     }
-//
-//     A buffer to be used with sg_append_buffer() must have been created
-//     with sg_buffer_desc.usage.dynamic_update or .stream_update.
-//
-//     If the application appends more data to the buffer then fits into
-//     the buffer, the buffer will go into the "overflow" state for the
-//     rest of the frame.
-//
-//     Any draw calls attempting to render an overflown buffer will be
-//     silently dropped (in debug mode this will also result in a
-//     validation error).
-//
-//     You can also check manually if a buffer is in overflow-state by calling
-//
-//         bool sg_query_buffer_overflow(sg_buffer buf)
-//
-//     You can manually check to see if an overflow would occur before adding
-//     any data to a buffer by calling
-//
-//         bool sg_query_buffer_will_overflow(sg_buffer buf, size_t size)
-//
-//     NOTE: Due to restrictions in underlying 3D-APIs, appended chunks of
-//     data will be 4-byte aligned in the destination buffer. This means
-//     that there will be gaps in index buffers containing 16-bit indices
-//     when the number of indices in a call to sg_append_buffer() is
-//     odd. This isn't a problem when each call to sg_append_buffer()
-//     is associated with one draw call, but will be problematic when
-//     a single indexed draw call spans several appended chunks of indices.
+//     NOTE: the update functions will be replaced with more flexible
+//     'write-persistent' functions in the next resource API update!
 //
 // --- to check at runtime for optional features, limits and pixelformat support,
 //     call:
@@ -460,7 +432,7 @@
 // --- call the following helper functions to compute the number of
 //     bytes in a texture row or surface for a specific pixel format.
 //     These functions might be helpful when preparing image data for consumption
-//     by sg_make_image() or sg_update_image():
+//     by sg_make_image() or the sg_write_image_*() functions:
 //
 //         int sg_query_row_pitch(sg_pixel_format fmt, int width, int int row_align_bytes);
 //         int sg_query_surface_pitch(sg_pixel_format fmt, int width, int height, int row_align_bytes);
@@ -2281,7 +2253,7 @@ pub const Backend = enum(i32) {
 ///
 /// The default pixel format for texture images is SG_PIXELFORMAT_RGBA8.
 ///
-/// The default pixel format for render target images is platform-dependent
+/// The default pixel format for pass attachment images is platform-dependent
 /// and taken from the sg_environment struct passed into sg_setup(). Typically
 /// the default formats are:
 ///
@@ -3264,24 +3236,30 @@ pub const Bindings = extern struct {
 /// .immutable (default: true)
 ///     the buffer content will never be updated from the CPU side while
 ///     in 'valid' resource state (but may be written to by a compute shader)
-/// .dynamic_update (default: false)
-///     the buffer content will be infrequently updated from the CPU side
-/// .stream_update (default: false)
-///     the buffer content will be updated each frame from the CPU side
 /// .write_unsealed (default: false)
 ///     when true, creates an immutable buffer in 'unsealed' resource state,
 ///     unsealed buffers can be populated with data by one or multiple
 ///     `sg_write_buffer_unsealed()` calls before being 'sealed' by
 ///     calling `sg_seal_buffer()` which transitions from 'unsealed'
 ///     to 'valid' resource state
+/// .write_transient (default: false)
+///     the buffer is going to be used as destination in
+///     sg_write_buffer_transient() calls, write-transient buffers are used for
+///     scenarios where data that's written from the CPU side is consumed in the
+///     same frame by the GPU-side and doesn't need to survive into the next
+///     frame
+/// .dynamic_update (default: false)
+///     the buffer content will be infrequently updated from the CPU side
+///     NOTE: dynamic_update is deprecated and will be replaced with a
+///     .write_persistent flag in one of the next updates
 pub const BufferUsage = extern struct {
     vertex_buffer: bool = false,
     index_buffer: bool = false,
     storage_buffer: bool = false,
     immutable: bool = false,
-    dynamic_update: bool = false,
-    stream_update: bool = false,
     write_unsealed: bool = false,
+    write_transient: bool = false,
+    dynamic_update: bool = false,
 };
 
 /// sg_buffer_desc
@@ -3300,17 +3278,14 @@ pub const BufferUsage = extern struct {
 /// keep the .size item zero-initialized, and set the size together with the
 /// pointer to the initial data in the .data item.
 ///
-/// For immutable or mutable buffers without initial data, keep the .data item
-/// zero-initialized, and set the buffer size in the .size item instead.
+/// For buffers without initial data, keep the .data item zero-initialized, and
+/// set the buffer size in the .size item instead.
 ///
-/// You can also set both size values, but currently both size values must
-/// be identical (this may change in the future when the dynamic resource
-/// management may become more flexible).
+/// You can also set both size values, but both size values must
+/// be identical.
 ///
-/// NOTE: Immutable buffers without storage-buffer-usage *must* be created
-/// with initial content, this restriction doesn't apply to storage buffer usage,
-/// because storage buffers may also get their initial content by running
-/// a compute shader on them.
+/// NOTE: Immutable buffers that are neither storage-buffers or have
+/// write-unsealed usage *must* be created with initial data.
 ///
 /// NOTE: Buffers without initial data will have undefined content, e.g.
 /// do *not* expect the buffer to be zero-initialized!
@@ -3323,12 +3298,13 @@ pub const BufferUsage = extern struct {
 /// .gl_buffers[SG_NUM_INFLIGHT_FRAMES]
 /// .mtl_buffers[SG_NUM_INFLIGHT_FRAMES]
 /// .d3d11_buffer
+/// .wgpu_buffer
 ///
 /// You must still provide all other struct items except the .data item, and
 /// these must match the creation parameters of the native buffers you provide.
 /// For sg_buffer_desc.usage.immutable buffers, only provide a single native
 /// 3D-API buffer, otherwise you need to provide SG_NUM_INFLIGHT_FRAMES buffers
-/// (only for GL and Metal, not D3D11). Providing multiple buffers for GL and
+/// (only for GL and Metal, not D3D11 or WebGPU). Providing multiple buffers for GL and
 /// Metal is necessary because sokol_gfx will rotate through them when calling
 /// sg_update_buffer() to prevent lock-stalls.
 ///
@@ -3374,16 +3350,22 @@ pub const BufferDesc = extern struct {
 /// .immutable (default: true)
 ///     the image content cannot be updated from the CPU side
 ///     (but may be updated by the GPU in a render- or compute-pass)
-/// .dynamic_update (default: false)
-///     the image content is updated infrequently by the CPU via sg_update_image()
-/// .stream_update (default: false)
-///     the image content is updated each frame by the CPU via sg_update_image()
 /// .write_unsealed (default: false)
 ///     when true, creates an immutable image in 'unsealed' resource state,
 ///     unsealed images can be populated with data by one or multiple
 ///     `sg_write_image_unsealed()` calls before being 'sealed' by
 ///     calling `sg_seal_image()` which transitions from 'unsealed'
 ///     to 'valid' resource state
+/// .write_transient (default: false)
+///     the image is going to be used as destination in
+///     sg_write_image_transient() calls, write-transient images are used for
+///     scenarios where data that's written from the CPU side is consumed in the
+///     same frame by the GPU-side and doesn't need to survive into the next
+///     frame
+/// .dynamic_update (default: false)
+///     the image content is updated infrequently by the CPU via sg_update_image()
+///     NOTE: dynamic_update is deprecated and will be replaced with a
+///     .write_persistent flag in one of the next updates
 ///
 /// Note that creating a texture view from the image to be used for
 /// texture-sampling in vertex-, fragment- or compute-shaders
@@ -3394,9 +3376,9 @@ pub const ImageUsage = extern struct {
     resolve_attachment: bool = false,
     depth_stencil_attachment: bool = false,
     immutable: bool = false,
-    dynamic_update: bool = false,
-    stream_update: bool = false,
     write_unsealed: bool = false,
+    write_transient: bool = false,
+    dynamic_update: bool = false,
 };
 
 /// sg_view_type
@@ -3472,7 +3454,7 @@ pub const ImageLocation = extern struct {
 /// Describes the data to be written from CPU memory into an image:
 ///
 /// .data
-///     Pointer to and size of the data in CPU memory
+///     Pointer to and size (in bytes) of the data in CPU memory
 /// .offset
 ///     Optional offset that's added to data.ptr
 /// .bytes_per_row
@@ -3488,6 +3470,10 @@ pub const ImageLocation = extern struct {
 ///     slices, can be left zero-initialized when the image data is tightly
 ///     packed (e.g. no gaps between slices). Must be a multiple of
 ///     .bytes_per_row
+///
+/// NOTE: use the helper functions sg_query_row_pitch() and sg_query_surface_pitch()
+/// to compute values compatible with the .bytes_per_row and .bytes_per_slice
+/// restrictions.
 pub const WriteImageSource = extern struct {
     data: Range = .{},
     offset: usize = 0,
@@ -3498,7 +3484,7 @@ pub const WriteImageSource = extern struct {
 /// sg_write_image_desc
 ///
 /// Describes a write operation into a single mipmap from CPU memory into
-/// an image object.
+/// an image object. Parameter of the sg_write_image_*() functions.
 ///
 /// .src
 ///     Defines the location and layout of the source data in CPU memory.
@@ -3520,7 +3506,7 @@ pub const WriteImageSource = extern struct {
 /// .src.bytes_per_slice
 ///     Same as above, default-zero indicates that the source data is layed
 ///     out as a tightly packed complete mip-map (e.g. when writing data into
-///     miplevel 0 of a 256x256 image, .src.bytes_per_slice will be 256*1024).
+///     miplevel 0 of a 256x256 image, .src.bytes_per_slice will be 256*256*4).
 /// .size.width, .size.height, .size.num_slices
 ///     Default-zero means 'the remaining width, height and num_slices' taking
 ///     .dst.x/y/slice into account. E.g. when .dst.x/y/num_slices are all zero,
@@ -3535,6 +3521,8 @@ pub const WriteImageDesc = extern struct {
 /// sg_buffer_location
 ///
 /// Describes the source or destination location in a buffer.
+///
+/// NOTE: .offset must be 4-byte aligned (ensured by the validation layer)
 pub const BufferLocation = extern struct {
     buffer: Buffer = .{},
     offset: usize = 0,
@@ -3542,7 +3530,7 @@ pub const BufferLocation = extern struct {
 
 /// sg_write_buffer_source
 ///
-/// Describes the data to be written from CPU memory into a buffer.
+/// Describes the CPU-side source data to be written into a buffer.
 ///
 /// .data
 ///     Pointer to and size of the data in CPU memory
@@ -3556,7 +3544,7 @@ pub const WriteBufferSource = extern struct {
 /// sg_write_buffer_desc
 ///
 /// Describes a write operation into a buffer from CPU memory into
-/// a buffer object.
+/// a buffer object. Parameter of the sg_write_buffer_*() functions.
 ///
 /// .src
 ///     Defines the location of the source data in CPU memory.
@@ -4219,6 +4207,8 @@ pub const TraceHooks = extern struct {
     update_buffer: ?*const fn (Buffer, [*c]const Range, ?*anyopaque) callconv(.c) void = null,
     update_image: ?*const fn (Image, [*c]const ImageData, ?*anyopaque) callconv(.c) void = null,
     append_buffer: ?*const fn (Buffer, [*c]const Range, i32, ?*anyopaque) callconv(.c) void = null,
+    write_buffer_transient: ?*const fn ([*c]const WriteBufferDesc, ?*anyopaque) callconv(.c) void = null,
+    write_image_transient: ?*const fn ([*c]const WriteImageDesc, ?*anyopaque) callconv(.c) void = null,
     write_buffer_unsealed: ?*const fn ([*c]const WriteBufferDesc, ?*anyopaque) callconv(.c) void = null,
     write_image_unsealed: ?*const fn ([*c]const WriteImageDesc, ?*anyopaque) callconv(.c) void = null,
     seal_buffer: ?*const fn (Buffer, ?*anyopaque) callconv(.c) void = null,
@@ -4297,19 +4287,19 @@ pub const SlotInfo = extern struct {
 
 pub const BufferInfo = extern struct {
     slot: SlotInfo = .{},
+    num_slots: i32 = 0,
+    active_slot: i32 = 0,
     update_frame_index: u32 = 0,
     append_frame_index: u32 = 0,
     append_pos: i32 = 0,
     append_overflow: bool = false,
-    num_slots: i32 = 0,
-    active_slot: i32 = 0,
 };
 
 pub const ImageInfo = extern struct {
     slot: SlotInfo = .{},
-    upd_frame_index: u32 = 0,
     num_slots: i32 = 0,
     active_slot: i32 = 0,
+    upd_frame_index: u32 = 0,
 };
 
 pub const SamplerInfo = extern struct {
@@ -4533,6 +4523,8 @@ pub const FrameStats = extern struct {
     num_update_buffer: u32 = 0,
     num_append_buffer: u32 = 0,
     num_update_image: u32 = 0,
+    num_write_buffer_transient: u32 = 0,
+    num_write_image_transient: u32 = 0,
     num_write_buffer_unsealed: u32 = 0,
     num_write_image_unsealed: u32 = 0,
     num_seal_buffer: u32 = 0,
@@ -4613,6 +4605,7 @@ pub const LogItem = enum(i32) {
     D3D11_MAP_FOR_UPDATE_BUFFER_FAILED,
     D3D11_MAP_FOR_APPEND_BUFFER_FAILED,
     D3D11_MAP_FOR_UPDATE_IMAGE_FAILED,
+    D3D11_MAP_FOR_WRITE_BUFFER_TRANSIENT_FAILED,
     METAL_CREATE_BUFFER_FAILED,
     METAL_TEXTURE_FORMAT_NOT_SUPPORTED,
     METAL_CREATE_TEXTURE_FAILED,
@@ -4658,7 +4651,7 @@ pub const LogItem = enum(i32) {
     VULKAN_STAGING_CREATE_BUFFER_FAILED,
     VULKAN_STAGING_ALLOCATE_MEMORY_FAILED,
     VULKAN_STAGING_BIND_BUFFER_MEMORY_FAILED,
-    VULKAN_STAGING_STREAM_BUFFER_OVERFLOW,
+    VULKAN_STAGING_TRANSIENT_BUFFER_OVERFLOW,
     VULKAN_STAGING_IMAGE_ROW_PITCH_GREATER_STAGING_BUFFER,
     VULKAN_CREATE_SHARED_BUFFER_FAILED,
     VULKAN_ALLOCATE_SHARED_BUFFER_MEMORY_FAILED,
@@ -4723,6 +4716,8 @@ pub const LogItem = enum(i32) {
     BEGINPASS_TOO_MANY_RESOLVE_ATTACHMENTS,
     BEGINPASS_ATTACHMENTS_ALIVE,
     DRAW_WITHOUT_BINDINGS,
+    WRITE_BUFFER_TRANSIENT_BUFFER_ALIVE,
+    WRITE_IMAGE_TRANSIENT_IMAGE_ALIVE,
     WRITE_BUFFER_UNSEALED_BUFFER_ALIVE,
     WRITE_IMAGE_UNSEALED_IMAGE_ALIVE,
     SEAL_BUFFER_ALIVE,
@@ -4740,7 +4735,7 @@ pub const LogItem = enum(i32) {
     SHADERDESC_TOO_MANY_FRAGMENTSTAGE_TEXTURESAMPLERPAIRS,
     SHADERDESC_TOO_MANY_COMPUTESTAGE_TEXTURESAMPLERPAIRS,
     VALIDATE_BUFFERDESC_CANARY,
-    VALIDATE_BUFFERDESC_IMMUTABLE_DYNAMIC_STREAM,
+    VALIDATE_BUFFERDESC_IMMUTABLE_VS_WRITABLE,
     VALIDATE_BUFFERDESC_UNSEALED_VS_IMMUTABLE,
     VALIDATE_BUFFERDESC_SEPARATE_BUFFER_TYPES,
     VALIDATE_BUFFERDESC_EXPECT_NONZERO_SIZE,
@@ -4753,9 +4748,11 @@ pub const LogItem = enum(i32) {
     VALIDATE_IMAGEDATA_NODATA,
     VALIDATE_IMAGEDATA_DATA_SIZE,
     VALIDATE_IMAGEDESC_CANARY,
-    VALIDATE_IMAGEDESC_IMMUTABLE_DYNAMIC_STREAM,
-    VALIDATE_IMAGEDESC_UNSEALED_VS_IMMUTABLE,
-    VALIDATE_IMAGEDESC_UNSEALED_VS_ATTACHMENT,
+    VALIDATE_IMAGEDESC_IMMUTABLE_VS_WRITABLE,
+    VALIDATE_IMAGEDESC_WRITE_UNSEALED_VS_IMMUTABLE,
+    VALIDATE_IMAGEDESC_WRITE_UNSEALED_VS_ATTACHMENT,
+    VALIDATE_IMAGEDESC_WRITE_TRANSIENT_VS_ATTACHMENT,
+    VALIDATE_IMAGEDESC_DYNAMIC_UPDATE_VS_ATTACHMENT,
     VALIDATE_IMAGEDESC_ATTACHMENT_COLOR_DEPTH_STENCIL,
     VALIDATE_IMAGEDESC_IMAGETYPE_2D_NUMSLICES,
     VALIDATE_IMAGEDESC_IMAGETYPE_CUBE_NUMSLICES,
@@ -4781,8 +4778,7 @@ pub const LogItem = enum(i32) {
     VALIDATE_IMAGEDESC_STORAGEIMAGE_PIXELFORMAT,
     VALIDATE_IMAGEDESC_STORAGEIMAGE_EXPECT_NO_MSAA,
     VALIDATE_IMAGEDESC_INJECTED_NO_DATA,
-    VALIDATE_IMAGEDESC_UNSEALED_NO_DATA,
-    VALIDATE_IMAGEDESC_DYNAMIC_NO_DATA,
+    VALIDATE_IMAGEDESC_WRITABLE_NO_DATA,
     VALIDATE_IMAGEDESC_COMPRESSED_IMMUTABLE,
     VALIDATE_SAMPLERDESC_CANARY,
     VALIDATE_SAMPLERDESC_ANISTROPIC_REQUIRES_LINEAR_FILTERING,
@@ -4988,11 +4984,13 @@ pub const LogItem = enum(i32) {
     VALIDATE_ABND_VBUF_ALIVE,
     VALIDATE_ABND_VBUF_USAGE,
     VALIDATE_ABND_VBUF_OVERFLOW,
+    VALIDATE_ABND_VBUF_WRITE_TRANSIENT,
     VALIDATE_ABND_EXPECTED_NO_IBUF,
     VALIDATE_ABND_EXPECTED_IBUF,
     VALIDATE_ABND_IBUF_ALIVE,
     VALIDATE_ABND_IBUF_USAGE,
     VALIDATE_ABND_IBUF_OVERFLOW,
+    VALIDATE_ABND_IBUF_WRITE_TRANSIENT,
     VALIDATE_ABND_EXPECTED_VIEW_BINDING,
     VALIDATE_ABND_VIEW_ALIVE,
     VALIDATE_ABND_EXPECT_TEXVIEW,
@@ -5003,10 +5001,13 @@ pub const LogItem = enum(i32) {
     VALIDATE_ABND_TEXVIEW_EXPECTED_NON_MULTISAMPLED_IMAGE,
     VALIDATE_ABND_TEXVIEW_EXPECTED_FILTERABLE_IMAGE,
     VALIDATE_ABND_TEXVIEW_EXPECTED_DEPTH_IMAGE,
+    VALIDATE_ABND_TEXVIEW_IMAGE_WRITE_TRANSIENT,
     VALIDATE_ABND_SBVIEW_READWRITE_IMMUTABLE,
+    VALIDATE_ABND_SBVIEW_BUFFER_WRITE_TRANSIENT,
     VALIDATE_ABND_SIMGVIEW_COMPUTE_PASS_EXPECTED,
     VALIDATE_ABND_SIMGVIEW_IMAGETYPE_MISMATCH,
     VALIDATE_ABND_SIMGVIEW_ACCESSFORMAT,
+    VALIDATE_ABND_SIMGVIEW_IMAGE_WRITE_TRANSIENT,
     VALIDATE_ABND_EXPECTED_SAMPLER_BINDING,
     VALIDATE_ABND_UNEXPECTED_SAMPLER_COMPARE_NEVER,
     VALIDATE_ABND_EXPECTED_SAMPLER_COMPARE_NEVER,
@@ -5055,28 +5056,33 @@ pub const LogItem = enum(i32) {
     VALIDATE_UPDIMG_ONCE,
     VALIDATE_WRITEBUFFERUNSEALED_USAGE,
     VALIDATE_WRITEBUFFERUNSEALED_RESOURCESTATE,
-    VALIDATE_WRITEBUFFERUNSEALED_SRC_DATA_POINTER,
-    VALIDATE_WRITEBUFFERUNSEALED_SRC_DATA_SIZE,
-    VALIDATE_WRITEBUFFERUNSEALED_SIZE,
-    VALIDATE_WRITEBUFFERUNSEALED_WRITE_OVERFLOW,
-    VALIDATE_WRITEBUFFERUNSEALED_READ_OVERFLOW,
+    VALIDATE_WRITEBUFFERTRANSIENT_USAGE,
+    VALIDATE_WRITEBUFFERTRANSIENT_WRITE_BEFORE_BIND,
+    VALIDATE_WRITEBUFFERTRANSIENT_DST_OFFSET_ALIGNMENT,
+    VALIDATE_WRITEBUFFER_SRC_DATA_POINTER,
+    VALIDATE_WRITEBUFFER_SRC_DATA_SIZE,
+    VALIDATE_WRITEBUFFER_SIZE,
+    VALIDATE_WRITEBUFFER_WRITE_OVERFLOW,
+    VALIDATE_WRITEBUFFER_READ_OVERFLOW,
     VALIDATE_WRITEIMAGEUNSEALED_USAGE,
     VALIDATE_WRITEIMAGEUNSEALED_RESOURCESTATE,
-    VALIDATE_WRITEIMAGEUNSEALED_SRC_DATA_POINTER,
-    VALIDATE_WRITEIMAGEUNSEALED_SRC_DATA_SIZE,
-    VALIDATE_WRITEIMAGEUNSEALED_BYTESPERROW,
-    VALIDATE_WRITEIMAGEUNSEALED_BYTESPERSLICE,
-    VALIDATE_WRITEIMAGEUNSEALED_MIPLEVEL,
-    VALIDATE_WRITEIMAGEUNSEALED_WIDTH,
-    VALIDATE_WRITEIMAGEUNSEALED_HEIGHT,
-    VALIDATE_WRITEIMAGEUNSEALED_NUMSLICES,
-    VALIDATE_WRITEIMAGEUNSEALED_READ_OVERFLOW,
-    VALIDATE_WRITEIMAGEUNSEALED_DST_X_RANGE,
-    VALIDATE_WRITEIMAGEUNSEALED_DST_Y_RANGE,
-    VALIDATE_WRITEIMAGEUNSEALED_DST_SLICE_RANGE,
-    VALIDATE_WRITEIMAGEUNSEALED_WRITE_WIDTH_OVERFLOW,
-    VALIDATE_WRITEIMAGEUNSEALED_WRITE_HEIGHT_OVERFLOW,
-    VALIDATE_WRITEIMAGEUNSEALED_WRITE_NUMSLICES_OVERFLOW,
+    VALIDATE_WRITEIMAGETRANSIENT_USAGE,
+    VALIDATE_WRITEIMAGETRANSIENT_WRITE_BEFORE_BIND,
+    VALIDATE_WRITEIMAGE_SRC_DATA_POINTER,
+    VALIDATE_WRITEIMAGE_SRC_DATA_SIZE,
+    VALIDATE_WRITEIMAGE_BYTESPERROW,
+    VALIDATE_WRITEIMAGE_BYTESPERSLICE,
+    VALIDATE_WRITEIMAGE_MIPLEVEL,
+    VALIDATE_WRITEIMAGE_WIDTH,
+    VALIDATE_WRITEIMAGE_HEIGHT,
+    VALIDATE_WRITEIMAGE_NUMSLICES,
+    VALIDATE_WRITEIMAGE_READ_OVERFLOW,
+    VALIDATE_WRITEIMAGE_DST_X_RANGE,
+    VALIDATE_WRITEIMAGE_DST_Y_RANGE,
+    VALIDATE_WRITEIMAGE_DST_SLICE_RANGE,
+    VALIDATE_WRITEIMAGE_WRITE_WIDTH_OVERFLOW,
+    VALIDATE_WRITEIMAGE_WRITE_HEIGHT_OVERFLOW,
+    VALIDATE_WRITEIMAGE_WRITE_NUMSLICES_OVERFLOW,
     VALIDATE_SEALBUFFER_RESOURCESTATE,
     VALIDATE_SEALIMAGE_RESOURCESTATE,
     VALIDATION_FAILED,
@@ -5103,7 +5109,7 @@ pub const LogItem = enum(i32) {
 /// .wgpu.disable_bindgroups_cache      false
 /// .wgpu.bindgroups_cache_size         1024
 /// .vulkan.copy_staging_buffer_size    4 MB
-/// .vulkan.stream_staging_buffer_size  16 MB
+/// .vulkan.transient_staging_buffer_size  16 MB
 /// .vulkan.descriptor_buffer_size      16 MB
 ///
 /// .allocator.alloc_fn     0 (in this case, malloc() will be called)
@@ -5175,13 +5181,13 @@ pub const LogItem = enum(i32) {
 ///         .usage.dynamic_update resources. The default is 4 MB,
 ///         bigger resource updates are split into multiple chunks
 ///         of the staging buffer size
-///     .vulkan.stream_staging_buffer_size
-///         Size of the staging buffer in bytes for updating .usage.stream_update
+///     .vulkan.transient_staging_buffer_size
+///         Size of the staging buffer in bytes for updating .usage.write_transient
 ///         resources. The default is 16 MB. The size must be big enough
-///         to accomodate all update into .usage.stream_update resources.
+///         to accomodate all writes into .usage.write_transient resources.
 ///         Any additional data will cause an error log message and
 ///         incomplete rendering. Note that the actually allocated size
-///         will be twice as much because the stream-staging-buffer is
+///         will be twice as much because the transient-staging-buffer is
 ///         double-buffered.
 ///     .vulkan.descriptor_buffer_size
 ///         Size of the descriptor-upload buffer in bytes. The default
@@ -5285,7 +5291,7 @@ pub const WgpuDesc = extern struct {
 
 pub const VulkanDesc = extern struct {
     copy_staging_buffer_size: i32 = 0,
-    stream_staging_buffer_size: i32 = 0,
+    transient_staging_buffer_size: i32 = 0,
     descriptor_buffer_size: i32 = 0,
 };
 
@@ -5522,9 +5528,21 @@ pub fn commit() void {
 }
 
 /// resource update functions (wip new resource update api)
-extern fn sg_write_buffer_unsealed([*c]const WriteBufferDesc) void;
+extern fn sg_write_buffer_transient([*c]const WriteBufferDesc) void;
 
 /// resource update functions (wip new resource update api)
+pub fn writeBufferTransient(desc: WriteBufferDesc) void {
+    sg_write_buffer_transient(&desc);
+}
+
+extern fn sg_write_image_transient([*c]const WriteImageDesc) void;
+
+pub fn writeImageTransient(desc: WriteImageDesc) void {
+    sg_write_image_transient(&desc);
+}
+
+extern fn sg_write_buffer_unsealed([*c]const WriteBufferDesc) void;
+
 pub fn writeBufferUnsealed(desc: WriteBufferDesc) void {
     sg_write_buffer_unsealed(&desc);
 }
